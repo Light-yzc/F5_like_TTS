@@ -29,7 +29,7 @@ class TextConditioner(nn.Module):
         super().__init__()
         from transformers import T5EncoderModel
 
-        self.encoder = T5EncoderModel.from_pretrained(model_name)
+        self.encoder = T5EncoderModel.from_pretrained(model_name, weights_only=False)
         self.text_dim = text_dim
         self.dit_dim = dit_dim
 

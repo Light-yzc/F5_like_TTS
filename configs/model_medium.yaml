@@ -35,7 +35,8 @@ audio:
   prompt_ratio_max: 0.5     # Maximum prompt proportion
 
 training:
-  batch_size: 32
+  # batch_size: 32
+  batch_size: 4
   learning_rate: 1.0e-4
   weight_decay: 0.01
   warmup_steps: 5000
