@@ -35,8 +35,8 @@ from models.vae import load_vae, vae_encode
 
 def handle_wav(base_dir: str, processed_dir: str, split: str, vae):
     """Encode all wavs to VAE latents."""
-    path_wav = os.path.join(base_dir, split, 'wavs')
-    out_wav_dir = os.path.join(processed_dir, split, 'wavs')
+    path_wav = os.path.join(base_dir, split, 'wav')
+    out_wav_dir = os.path.join(processed_dir, split, 'wav')
     os.makedirs(out_wav_dir, exist_ok=True)
 
     folder = Path(path_wav)
@@ -55,9 +55,11 @@ def handle_wav(base_dir: str, processed_dir: str, split: str, vae):
             # Resample to 48kHz
             if sr != 48000:
                 wav = torchaudio.functional.resample(wav, orig_freq=sr, new_freq=48000)
-            wav = torch.clamp(wav, -1.0, 1.0).to(vae.device)
+            wav = torch.clamp(wav, -1.0, 1.0).to(device=vae.device, dtype=vae.dtype).unsqueeze(1).repeat(1, 2, 1)
+            # print(f'wav_shape!:{wav.shape}')
             # VAE encode: (1, 1, samples) → (1, T, D)
             latent = vae_encode(vae, wav)
+            # print(f'latent_shape:{latent.shape}')
             latent = latent.squeeze(0).cpu()  # (T, D)
 
             # Save: {speaker}_{utterance_id}.pt
@@ -82,12 +84,12 @@ def handle_txt(base_dir: str, processed_dir: str, split: str):
             line = line.strip()
             if not line:
                 continue
-            parts = line.split()
+            parts = line.split( )
             utterance_id = parts[0]  # e.g. SSB00010001
             speaker = utterance_id[:7]  # e.g. SSB0001
             # Extract Chinese chars (every other token after the utterance ID)
             # AISHELL-3: "SSB00010001 pin1 汉 pin2 字 ..."
-            only_text = ''.join(parts[2::2])  # skip id and pinyins
+            only_text = ''.join(parts[1::2])  # skip id and pinyins
             fout.write(f"{speaker}_{utterance_id}_{only_text}\n")
 
     print(f"Processed text for {split}: {out_txt}")
@@ -110,7 +112,7 @@ def main():
 
     # Load VAE and encode audio
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    vae = load_vae(args.vae_path, device=device)
+    vae = load_vae(args.vae_path, device=device,precision='fp16')
     for split in args.splits:
         handle_wav(args.base_dir, args.processed_dir, split, vae)
 

@@ -67,9 +67,9 @@ class TTSDataset(Dataset):
                     continue
                 speaker, utt_id, text = line.split('_', 2)  # maxsplit=2
                 sample_idx = len(self.samples)
-                latent_name = f"{speaker}_{utt_id}.pt"
+                latent_name = f"{speaker}_{utt_id.split('.')[0]}.pt"
                 self.samples.append({
-                    "latent_path": str(folder / 'wavs' / latent_name),
+                    "latent_path": str(folder / 'wav' / latent_name),
                     "text": text,
                     "speaker": speaker,
                 })

@@ -43,7 +43,7 @@ def vae_encode(vae, waveform: torch.Tensor) -> torch.Tensor:
     """
     if waveform.dim() == 2:
         waveform = waveform.unsqueeze(1)  # (B, samples) → (B, 1, samples)
-    latent = vae.encode(waveform).latent_dist.mean  # deterministic
+    latent = vae.encode(waveform).latent_dist.sample()  # deterministic
     # AutoencoderOobleck returns (B, D, T), transpose to (B, T, D)
     if latent.dim() == 3 and latent.shape[1] != latent.shape[2]:
         latent = latent.transpose(1, 2)  # (B, D, T) → (B, T, D)
