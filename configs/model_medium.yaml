@@ -1,5 +1,8 @@
 # VAE-DiT TTS — Medium Config (~400M DiT)
 
+vae:
+  model_path: "models/vae_model"   # local path or HuggingFace ID
+  precision: "bf16"
 model:
   # DiT
   latent_dim: 64            # VAE latent dimension (adjust to your VAE)
