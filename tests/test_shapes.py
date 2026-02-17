@@ -88,8 +88,9 @@ def test_dit_full():
     timestep = torch.rand(B)
     text_kv = torch.randn(B, L_text, dit_dim)
     text_mask = torch.ones(B, L_text)
+    padding_mask = torch.ones(B, T_total)  # no padding in test
 
-    velocity = dit(x_t, mask, timestep, text_kv, text_mask)
+    velocity = dit(x_t, mask, timestep, text_kv, text_mask, padding_mask=padding_mask)
     assert velocity.shape == (B, T_total, latent_dim), \
         f"DiT output shape mismatch: {velocity.shape}"
     print(f"✓ DiT (params: {dit.num_params / 1e6:.1f}M)")
@@ -103,8 +104,9 @@ def test_dit_backward():
     t = torch.rand(2)
     text_kv = torch.randn(2, 10, 128)
     text_mask = torch.ones(2, 10)
+    padding_mask = torch.ones(2, 30)
 
-    out = dit(x_t, mask, t, text_kv, text_mask)
+    out = dit(x_t, mask, t, text_kv, text_mask, padding_mask=padding_mask)
     loss = out[:, 10:].pow(2).mean()  # Loss on generation region
     loss.backward()
 
@@ -135,13 +137,27 @@ def test_flow_matching_loss():
     dit = DiT(latent_dim=16, dit_dim=128, depth=2, heads=2, head_dim=64, ff_mult=2.0)
     flow = FlowMatching(cfg_dropout_rate=0.5)
 
-    prompt = torch.randn(2, 10, 16)
-    target = torch.randn(2, 20, 16)
-    text_kv = torch.randn(2, 8, 128)
-    text_mask = torch.ones(2, 8)
-    null_kv = torch.zeros(2, 1, 128)
+    B = 2
+    T_prompt, T_target = 10, 20
+    T_total = T_prompt + T_target
 
-    losses = flow.compute_loss(dit, prompt, target, text_kv, text_mask, null_kv)
+    # Build packed latent: [prompt | target]
+    latent = torch.randn(B, T_total, 16)
+    prompt_mask = torch.zeros(B, T_total)
+    target_mask = torch.zeros(B, T_total)
+    padding_mask = torch.ones(B, T_total)
+    prompt_mask[:, :T_prompt] = 1.0
+    target_mask[:, T_prompt:] = 1.0
+
+    text_kv = torch.randn(B, 8, 128)
+    text_mask = torch.ones(B, 8)
+    null_kv = torch.zeros(B, 1, 128)
+
+    losses = flow.compute_loss(
+        dit, latent, prompt_mask, target_mask,
+        text_kv, text_mask, null_kv,
+        padding_mask=padding_mask,
+    )
     assert "loss" in losses
     losses["loss"].backward()
     print(f"✓ FlowMatching.compute_loss (loss={losses['loss'].item():.4f})")

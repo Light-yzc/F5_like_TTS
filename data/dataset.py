@@ -127,7 +127,13 @@ class TTSDataset(Dataset):
 
 def collate_fn(batch: list[dict], tokenizer=None, max_text_len: int = 512) -> dict:
     """
-    Collate function that pads latents and tokenizes text.
+    Collate function that packs prompt + target contiguously, padding at end.
+
+    Instead of padding prompt and target separately (which creates mid-sequence
+    padding), we concatenate valid frames first, then pad only at the end.
+
+    Output layout per sample:
+        [valid_prompt_frames | valid_target_frames | padding...]
 
     Args:
         batch: list of dataset items
@@ -135,37 +141,48 @@ def collate_fn(batch: list[dict], tokenizer=None, max_text_len: int = 512) -> di
         max_text_len: maximum text token length
 
     Returns:
-        Collated batch dict with padded tensors
+        Collated batch dict:
+            latent:       (B, T_max, D)  packed prompt+target, padded at end
+            prompt_mask:  (B, T_max)     1=prompt frame, 0=other
+            target_mask:  (B, T_max)     1=valid target frame, 0=other
+            padding_mask: (B, T_max)     1=valid (prompt or target), 0=pad
+            target_frames: (B,)          GT target frame count
     """
     B = len(batch)
-
-    # Find max lengths
-    max_prompt = max(item["prompt_latent"].shape[0] for item in batch)
-    max_target = max(item["target_latent"].shape[0] for item in batch)
     D = batch[0]["prompt_latent"].shape[-1]
 
-    # Pad latents
-    prompt_latents = torch.zeros(B, max_prompt, D)
-    target_latents = torch.zeros(B, max_target, D)
-    prompt_masks = torch.zeros(B, max_prompt)
-    target_masks = torch.zeros(B, max_target)
+    # Compute per-sample lengths and max combined length
+    prompt_lens = [item["prompt_latent"].shape[0] for item in batch]
+    target_lens = [item["target_latent"].shape[0] for item in batch]
+    combined_lens = [p + t for p, t in zip(prompt_lens, target_lens)]
+    T_max = max(combined_lens)
+
+    # Allocate tensors
+    latents = torch.zeros(B, T_max, D)
+    prompt_masks = torch.zeros(B, T_max)
+    target_masks = torch.zeros(B, T_max)
+    padding_masks = torch.zeros(B, T_max)
     target_frames = torch.zeros(B)
 
     for i, item in enumerate(batch):
-        t_p = item["prompt_latent"].shape[0]
-        t_g = item["target_latent"].shape[0]
+        t_p = prompt_lens[i]
+        t_g = target_lens[i]
 
-        prompt_latents[i, :t_p] = item["prompt_latent"]
-        target_latents[i, :t_g] = item["target_latent"]
+        # Pack: [prompt | target]
+        latents[i, :t_p] = item["prompt_latent"]
+        latents[i, t_p:t_p + t_g] = item["target_latent"]
+
+        # Masks
         prompt_masks[i, :t_p] = 1.0
-        target_masks[i, :t_g] = 1.0
+        target_masks[i, t_p:t_p + t_g] = 1.0
+        padding_masks[i, :t_p + t_g] = 1.0
         target_frames[i] = item["target_frames"]
 
     result = {
-        "prompt_latent": prompt_latents,
-        "target_latent": target_latents,
+        "latent": latents,
         "prompt_mask": prompt_masks,
         "target_mask": target_masks,
+        "padding_mask": padding_masks,
         "target_frames": target_frames,
     }
 

@@ -16,6 +16,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 from typing import Optional
 
 
@@ -203,6 +204,7 @@ class DiTBlock(nn.Module):
         text_mask: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
+        padding_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         # AdaLN modulation parameters
         shift_sa, scale_sa, gate_sa, shift_ff, scale_ff, gate_ff = (
@@ -210,9 +212,9 @@ class DiTBlock(nn.Module):
         ).chunk(6, dim=1)
         # Each: (B, 1, dim)
 
-        # 1. Self-Attention with AdaLN-Zero
+        # 1. Self-Attention with AdaLN-Zero (mask out padding frames)
         h = self.self_attn_norm(x) * (1 + scale_sa) + shift_sa
-        h = self.self_attn(h, rope_cos=rope_cos, rope_sin=rope_sin)
+        h = self.self_attn(h, rope_cos=rope_cos, rope_sin=rope_sin, kv_mask=padding_mask)
         x = x + h * gate_sa
 
         # 2. Cross-Attention (standard residual, no AdaLN gate)
@@ -261,6 +263,7 @@ class DiT(nn.Module):
         self.latent_dim = latent_dim
         self.dit_dim = dit_dim
         self.depth = depth
+        self.gradient_checkpointing = False  # set via enable_gradient_checkpointing()
 
         # Input projection: [x_t ∥ prompt_mask] → dit_dim
         self.proj_in = nn.Linear(latent_dim + 1, dit_dim)
@@ -293,7 +296,17 @@ class DiT(nn.Module):
         timestep: torch.Tensor,
         text_kv: torch.Tensor,
         text_mask: Optional[torch.Tensor] = None,
+        padding_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        """
+        Args:
+            x_t:          (B, T, latent_dim) noisy latent sequence
+            mask:         (B, T)             1=prompt, 0=target/pad (input channel)
+            timestep:     (B,)               diffusion timestep
+            text_kv:      (B, L, dit_dim)    text conditioning
+            text_mask:    (B, L)             text attention mask
+            padding_mask: (B, T)             1=valid, 0=pad (for self-attention)
+        """
         B, T, D = x_t.shape
 
         # Concatenate prompt mask as extra channel
@@ -311,7 +324,14 @@ class DiT(nn.Module):
 
         # Transformer blocks
         for block in self.blocks:
-            x = block(x, time_emb, text_kv, text_mask, rope_cos, rope_sin)
+            if self.gradient_checkpointing and self.training:
+                x = checkpoint(
+                    block, x, time_emb, text_kv, text_mask,
+                    rope_cos, rope_sin, padding_mask,
+                    use_reentrant=False,
+                )
+            else:
+                x = block(x, time_emb, text_kv, text_mask, rope_cos, rope_sin, padding_mask)
 
         # Output projection with AdaLN
         shift, scale = (self.out_scale_shift + time_emb.unsqueeze(1)).chunk(2, dim=1)
@@ -327,3 +347,10 @@ class DiT(nn.Module):
     @property
     def num_trainable_params(self) -> int:
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+    def enable_gradient_checkpointing(self):
+        """Enable gradient checkpointing to save VRAM (~60% less activation memory)."""
+        self.gradient_checkpointing = True
+
+    def disable_gradient_checkpointing(self):
+        self.gradient_checkpointing = False

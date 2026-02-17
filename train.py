@@ -89,6 +89,9 @@ def train(args):
 
     # Build models
     dit, text_cond, dur_pred, flow = build_models(cfg, device)
+    if train_cfg.get("gradient_checkpointing", True):
+        dit.enable_gradient_checkpointing()
+        print("Gradient checkpointing enabled")
     print(f"DiT parameters: {dit.num_params / 1e6:.1f}M (trainable: {dit.num_trainable_params / 1e6:.1f}M)")
 
     # Tokenizer (for text encoding)
@@ -164,18 +167,17 @@ def train(args):
                 break
 
             # Move to device
-            prompt_latent = batch["prompt_latent"].to(device)
-            target_latent = batch["target_latent"].to(device)
+            latent = batch["latent"].to(device)
+            prompt_mask = batch["prompt_mask"].to(device)
+            target_mask = batch["target_mask"].to(device)
+            padding_mask = batch["padding_mask"].to(device)
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
             target_frames = batch["target_frames"].to(device)
 
             # Check for NaN/Inf in input data
-            if torch.isnan(prompt_latent).any() or torch.isinf(prompt_latent).any():
-                print(f"[Step {global_step}] WARNING: NaN/Inf in prompt_latent, skipping batch")
-                continue
-            if torch.isnan(target_latent).any() or torch.isinf(target_latent).any():
-                print(f"[Step {global_step}] WARNING: NaN/Inf in target_latent, skipping batch")
+            if torch.isnan(latent).any() or torch.isinf(latent).any():
+                print(f"[Step {global_step}] WARNING: NaN/Inf in latent, skipping batch")
                 continue
 
             with autocast(enabled=train_cfg.get("fp16", True)):
@@ -183,12 +185,13 @@ def train(args):
                 text_kv, text_mask = text_cond(input_ids, attention_mask)
 
                 # Expand null condition to batch size
-                null_kv = null_text_kv.expand(prompt_latent.shape[0], -1, -1)
+                null_kv = null_text_kv.expand(latent.shape[0], -1, -1)
 
                 # Flow matching loss
                 fm_losses = flow.compute_loss(
-                    dit, prompt_latent, target_latent,
+                    dit, latent, prompt_mask, target_mask,
                     text_kv, text_mask, null_kv,
+                    padding_mask=padding_mask,
                 )
 
                 # Duration predictor loss (on frozen text features)
@@ -203,8 +206,7 @@ def train(args):
                 if torch.isnan(loss) or torch.isinf(loss):
                     print(f"[Step {global_step}] WARNING: NaN/Inf loss detected!")
                     print(f"  fm_loss={fm_losses['loss'].item()}, dur_loss={dur_loss.item()}")
-                    print(f"  prompt_latent stats: mean={prompt_latent.mean():.4f}, std={prompt_latent.std():.4f}, max={prompt_latent.abs().max():.4f}")
-                    print(f"  target_latent stats: mean={target_latent.mean():.4f}, std={target_latent.std():.4f}, max={target_latent.abs().max():.4f}")
+                    print(f"  latent stats: mean={latent.mean():.4f}, std={latent.std():.4f}, max={latent.abs().max():.4f}")
                     optimizer.zero_grad()
                     continue
 
