@@ -280,9 +280,7 @@ class DiT(nn.Module):
         # Output: AdaLN → Linear → latent_dim
         self.norm_out = RMSNorm(dit_dim)
         self.proj_out = nn.Linear(dit_dim, latent_dim)
-        self.out_scale_shift = nn.Parameter(
-            torch.randn(1, 2, dit_dim) / dit_dim**0.5
-        )
+        self.out_scale_shift = nn.Parameter(torch.zeros(1, 2, dit_dim))
 
         # Initialize output projection to near-zero (better training start)
         nn.init.zeros_(self.proj_out.weight)

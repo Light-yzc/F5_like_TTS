@@ -22,9 +22,12 @@ from models.text_encoder import TextConditioner
 from models.duration_predictor import DurationPredictor
 from models.flow_matching import FlowMatching
 from data.dataset import TTSDataset, collate_fn
-import bitsandbytes as bnb
-# import wandb
+from inference import inference
+from models.vae import load_vae, vae_encode, vae_decode
 
+import gc
+import bitsandbytes as bnb
+import wandb
 
 
 def load_config(path: str) -> dict:
@@ -77,10 +80,11 @@ def train(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     train_cfg = cfg["training"]
     audio_cfg = cfg["audio"]
-    # wandb.init(
-    #     project="vae_dit_tts",
-    #     config=cfg,
-    # )
+    wandb.login()
+    wandb.init(
+        project="vae_dit_tts",
+        config=cfg,
+    )
     print(f"Device: {device}")
 
     # Build models
@@ -166,6 +170,14 @@ def train(args):
             attention_mask = batch["attention_mask"].to(device)
             target_frames = batch["target_frames"].to(device)
 
+            # Check for NaN/Inf in input data
+            if torch.isnan(prompt_latent).any() or torch.isinf(prompt_latent).any():
+                print(f"[Step {global_step}] WARNING: NaN/Inf in prompt_latent, skipping batch")
+                continue
+            if torch.isnan(target_latent).any() or torch.isinf(target_latent).any():
+                print(f"[Step {global_step}] WARNING: NaN/Inf in target_latent, skipping batch")
+                continue
+
             with autocast(enabled=train_cfg.get("fp16", True)):
                 # Text encoding
                 text_kv, text_mask = text_cond(input_ids, attention_mask)
@@ -186,11 +198,22 @@ def train(args):
 
                 # Total loss
                 loss = fm_losses["loss"] + 0.1 * dur_loss
-                # wandb.log({
-                #     "train/loss": loss.item(),
-                #     "train/fm_loss": fm_losses["loss"].item(),
-                #     "train/dur_loss": dur_loss.item(),
-                # })
+
+                # NaN check on loss
+                if torch.isnan(loss) or torch.isinf(loss):
+                    print(f"[Step {global_step}] WARNING: NaN/Inf loss detected!")
+                    print(f"  fm_loss={fm_losses['loss'].item()}, dur_loss={dur_loss.item()}")
+                    print(f"  prompt_latent stats: mean={prompt_latent.mean():.4f}, std={prompt_latent.std():.4f}, max={prompt_latent.abs().max():.4f}")
+                    print(f"  target_latent stats: mean={target_latent.mean():.4f}, std={target_latent.std():.4f}, max={target_latent.abs().max():.4f}")
+                    optimizer.zero_grad()
+                    continue
+
+                wandb.log({
+                    "train/loss": loss.item(),
+                    "train/fm_loss": fm_losses["loss"].item(),
+                    "train/dur_loss": dur_loss.item(),
+                    "train/lr": scheduler.get_last_lr()[0],
+                })
 
             # Backward
             optimizer.zero_grad()
@@ -204,18 +227,53 @@ def train(args):
             global_step += 1
             progress_bar.update(1)
 
-            # Logging
+            # # Logging
+            # if global_step % 100 == 0:
+            #     lr = scheduler.get_last_lr()[0]
+            #     progress_bar.set_postfix({
+            #         "loss": f"{loss.item():.4f}",
+            #         "fm": f"{fm_losses['mse'].item():.4f}",
+            #         "dur": f"{dur_loss.item():.4f}",
+            #         "lr": f"{lr:.2e}"
+            #     })
+            # Periodic inference with on-demand VAE
             if global_step % 100 == 0:
-                lr = scheduler.get_last_lr()[0]
-                progress_bar.set_postfix({
-                    "loss": f"{loss.item():.4f}",
-                    "fm": f"{fm_losses['mse'].item():.4f}",
-                    "dur": f"{dur_loss.item():.4f}",
-                    "lr": f"{lr:.2e}"
-                })
+                try:
+                    dit.eval()
+                    # Load VAE → infer → unload
+                    vae_cfg = cfg["vae"]
+                    vae = load_vae(vae_cfg["model_path"], device=str(device), precision=vae_cfg.get("precision", "fp16"))
+                    output_path = f"outputs/infer_step_{global_step}.wav"
+                    os.makedirs("outputs", exist_ok=True)
+                    inference(
+                        dit, text_cond, dur_pred, flow, cfg,
+                        prompt_audio_path="ref_audio.wav",
+                        prompt_text="八点十分",
+                        tts_text="春天有野草秋天有星空冬天只有冰冷大地的故乡",
+                        vae_encode_fn=lambda wav: vae_encode(vae, wav),
+                        vae_decode_fn=lambda lat: vae_decode(vae, lat),
+                        output_path=output_path,
+                    )
+                    # Log audio to wandb
+                    if os.path.exists(output_path):
+                        wandb.log({
+                            "infer/audio": wandb.Audio(
+                                output_path,
+                                sample_rate=audio_cfg["sample_rate"],
+                                caption=f"step_{global_step}",
+                            ),
+                        }, step=global_step)
+                    # Unload VAE to free VRAM
+                    del vae
+                    torch.cuda.empty_cache()
+                    gc.collect()
+                except Exception as e:
+                    print(f"[Step {global_step}] Inference failed: {e}")
+                finally:
+                    dit.train()
 
             # Save checkpoint
-            if global_step % 10000 == 0:
+            if global_step % 2000 == 0:
                 ckpt_dir = os.path.join(args.output_dir, f"step_{global_step}")
                 os.makedirs(ckpt_dir, exist_ok=True)
                 torch.save({

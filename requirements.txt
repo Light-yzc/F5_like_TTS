@@ -7,3 +7,4 @@ pyyaml
 wandb
 protobuf==3.20.*
 sentencepiece
+bitsandbytes
