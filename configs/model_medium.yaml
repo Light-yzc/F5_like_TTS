@@ -1,0 +1,43 @@
+# VAE-DiT TTS — Medium Config (~400M DiT)
+
+model:
+  # DiT
+  latent_dim: 64            # VAE latent dimension (adjust to your VAE)
+  dit_dim: 1024             # Transformer hidden dimension
+  depth: 22                 # Number of DiT blocks
+  heads: 16                 # Number of attention heads
+  head_dim: 64              # head_dim = dit_dim / heads
+  ff_mult: 2.5              # FFN intermediate = dit_dim * ff_mult
+  
+  # Text Encoder
+  text_encoder_name: "google/mt5-large"
+  text_encoder_dim: 1024    # mt5-large hidden size
+  freeze_text_encoder: true
+  
+  # Duration Predictor
+  duration_hidden_dim: 512
+  duration_num_layers: 2
+  
+  # Flow Matching
+  cfg_dropout_rate: 0.15    # Probability of dropping text condition
+  default_cfg_scale: 3.0
+  default_infer_steps: 30
+
+audio:
+  sample_rate: 48000
+  latent_rate: 25           # VAE compression: 48000Hz → 25Hz
+  max_duration_sec: 30
+  min_duration_sec: 3
+  prompt_ratio_min: 0.2     # Minimum prompt proportion
+  prompt_ratio_max: 0.5     # Maximum prompt proportion
+
+training:
+  batch_size: 32
+  learning_rate: 1.0e-4
+  weight_decay: 0.01
+  warmup_steps: 5000
+  max_steps: 500000
+  scheduler: cosine
+  gradient_clip: 1.0
+  fp16: true
+  gradient_accumulation_steps: 1
