@@ -21,6 +21,9 @@ from models.text_encoder import TextConditioner
 from models.duration_predictor import DurationPredictor
 from models.flow_matching import FlowMatching
 from data.dataset import TTSDataset, collate_fn
+import bitsandbytes as bnb
+# import wandb
+
 
 
 def load_config(path: str) -> dict:
@@ -67,12 +70,16 @@ def build_models(cfg: dict, device: torch.device):
     return dit, text_cond, dur_pred, flow
 
 
+    
 def train(args):
     cfg = load_config(args.config)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     train_cfg = cfg["training"]
     audio_cfg = cfg["audio"]
-
+    # wandb.init(
+    #     project="vae_dit_tts",
+    #     config=cfg,
+    # )
     print(f"Device: {device}")
 
     # Build models
@@ -110,12 +117,16 @@ def train(args):
         + list(text_cond.projector.parameters())
         + list(dur_pred.parameters())
     )
-    optimizer = torch.optim.AdamW(
+    # optimizer = torch.optim.AdamW(
+    #     trainable_params,
+    #     lr=train_cfg["learning_rate"],
+    #     weight_decay=train_cfg["weight_decay"],
+    # )
+    optimizer = bnb.optim.AdamW8bit(
         trainable_params,
         lr=train_cfg["learning_rate"],
         weight_decay=train_cfg["weight_decay"],
     )
-
     # Scheduler
     max_steps = train_cfg["max_steps"]
     warmup_steps = train_cfg["warmup_steps"]
@@ -173,6 +184,11 @@ def train(args):
 
                 # Total loss
                 loss = fm_losses["loss"] + 0.1 * dur_loss
+                # wandb.log({
+                #     "train/loss": loss.item(),
+                #     "train/fm_loss": fm_losses["loss"].item(),
+                #     "train/dur_loss": dur_loss.item(),
+                # })
 
             # Backward
             optimizer.zero_grad()
