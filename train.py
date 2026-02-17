@@ -12,6 +12,7 @@ from functools import partial
 
 import yaml
 import torch
+from tqdm import tqdm
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.cuda.amp import GradScaler, autocast
@@ -152,6 +153,7 @@ def train(args):
     dur_pred.train()
 
     print("Starting training...")
+    progress_bar = tqdm(total=max_steps, initial=global_step, desc="Training")
     while global_step < max_steps:
         for batch in dataloader:
             if global_step >= max_steps:
@@ -200,17 +202,17 @@ def train(args):
             scheduler.step()
 
             global_step += 1
+            progress_bar.update(1)
 
             # Logging
             if global_step % 100 == 0:
                 lr = scheduler.get_last_lr()[0]
-                print(
-                    f"Step {global_step}/{max_steps} | "
-                    f"loss={loss.item():.4f} | "
-                    f"fm={fm_losses['mse'].item():.4f} | "
-                    f"dur={dur_loss.item():.4f} | "
-                    f"lr={lr:.2e}"
-                )
+                progress_bar.set_postfix({
+                    "loss": f"{loss.item():.4f}",
+                    "fm": f"{fm_losses['mse'].item():.4f}",
+                    "dur": f"{dur_loss.item():.4f}",
+                    "lr": f"{lr:.2e}"
+                })
 
             # Save checkpoint
             if global_step % 10000 == 0:
@@ -225,8 +227,10 @@ def train(args):
                     "global_step": global_step,
                     "config": cfg,
                 }, os.path.join(ckpt_dir, "checkpoint.pt"))
+                # Save checkpoint
                 print(f"Saved checkpoint at step {global_step}")
-
+    
+    progress_bar.close()
     print("Training complete!")
 
 
