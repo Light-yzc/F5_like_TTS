@@ -16,7 +16,8 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from typing import Optional
-
+import tqdm
+from pathlib import Path
 
 class TTSDataset(Dataset):
     """
@@ -54,57 +55,73 @@ class TTSDataset(Dataset):
         self.prompt_ratio_max = prompt_ratio_max
 
         # Discover samples
+        # content.txt format: "speaker_utteranceId_text"
+        # e.g. "SSB0001_SSB00010001_今天天气真好"
         self.samples = []
-        if os.path.isdir(data_root):
-            for name in sorted(os.listdir(data_root)):
-                sample_dir = os.path.join(data_root, name)
-                latent_path = os.path.join(sample_dir, "latent.pt")
-                text_path = os.path.join(sample_dir, "text.txt")
-                if os.path.isfile(latent_path) and os.path.isfile(text_path):
-                    self.samples.append({
-                        "latent_path": latent_path,
-                        "text_path": text_path,
-                    })
+        self.speaker_to_indices = {}  # speaker_id → [sample indices]
+        folder = Path(data_root)
+        with open(os.path.join(folder, 'content.txt'), 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                speaker, utt_id, text = line.split('_', 2)  # maxsplit=2
+                sample_idx = len(self.samples)
+                latent_name = f"{speaker}_{utt_id}.pt"
+                self.samples.append({
+                    "latent_path": str(folder / 'wavs' / latent_name),
+                    "text": text,
+                    "speaker": speaker,
+                })
+                self.speaker_to_indices.setdefault(speaker, []).append(sample_idx)
 
     def __len__(self) -> int:
         return len(self.samples)
 
-    def __getitem__(self, idx: int) -> dict:
-        sample = self.samples[idx]
-
-        # Load latent
-        latent = torch.load(sample["latent_path"], map_location="cpu", weights_only=True)
-        # Clamp to max duration
+    def _load_latent(self, path: str) -> torch.Tensor:
+        """Load latent and clamp to valid length range."""
+        latent = torch.load(path, map_location="cpu", weights_only=True)
         if latent.shape[0] > self.max_frames:
             start = random.randint(0, latent.shape[0] - self.max_frames)
             latent = latent[start : start + self.max_frames]
-
-        T = latent.shape[0]
-        if T < self.min_frames:
-            # Skip too-short samples (should be filtered in preprocessing)
-            # Pad with zeros as fallback
-            pad = self.min_frames - T
+        if latent.shape[0] < self.min_frames:
+            pad = self.min_frames - latent.shape[0]
             latent = F.pad(latent, (0, 0, 0, pad))
-            T = self.min_frames
+        return latent
 
-        # Random split into prompt + target
-        ratio = random.uniform(self.prompt_ratio_min, self.prompt_ratio_max)
-        split = max(1, int(T * ratio))
-        split = min(split, T - 1)  # Ensure at least 1 frame for target
+    def __getitem__(self, idx: int) -> dict:
+        sample = self.samples[idx]
+        speaker = sample["speaker"]
 
-        prompt_latent = latent[:split]
-        target_latent = latent[split:]
+        # Target: current sample
+        target_latent = self._load_latent(sample["latent_path"])
 
-        # Load text
-        with open(sample["text_path"], "r", encoding="utf-8") as f:
-            text = f.read().strip()
+        # Prompt: pick a different utterance from the same speaker
+        same_speaker_indices = self.speaker_to_indices[speaker]
+        if len(same_speaker_indices) > 1:
+            prompt_idx = idx
+            while prompt_idx == idx:
+                prompt_idx = random.choice(same_speaker_indices)
+            prompt_latent = self._load_latent(self.samples[prompt_idx]["latent_path"])
+            prompt_text = self.samples[prompt_idx]["text"]
+        else:
+            # Fallback: same-utterance split
+            ratio = random.uniform(self.prompt_ratio_min, self.prompt_ratio_max)
+            split = max(1, min(int(target_latent.shape[0] * ratio), target_latent.shape[0] - 1))
+            prompt_latent = target_latent[:split]
+            target_latent = target_latent[split:]
+            prompt_text = sample["text"]  # full text as approximation
+
+        # Combined text for T5: "prompt_text [SEP] target_text"
+        target_text = sample["text"]
+        full_text = f"{prompt_text} [SEP] {target_text}"
 
         return {
-            "prompt_latent": prompt_latent,     # (T_prompt, D)
-            "target_latent": target_latent,     # (T_gen, D)
-            "full_text": text,                  # str
-            "total_frames": T,                  # int
-            "target_frames": T - split,         # int (for duration predictor GT)
+            "prompt_latent": prompt_latent,
+            "target_latent": target_latent,
+            "full_text": full_text,
+            "total_frames": prompt_latent.shape[0] + target_latent.shape[0],
+            "target_frames": target_latent.shape[0],
         }
 
 
