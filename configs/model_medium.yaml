@@ -1,8 +1,8 @@
 # VAE-DiT TTS — Medium Config (~400M DiT)
 
 vae:
-  model_path: "models/vae_model"   # local path or HuggingFace ID
-  precision: "bf16"
+  model_path: "model_files/vae"   # local path or HuggingFace ID
+  precision: "fp16"
 model:
   # DiT
   # DiT (Large ~500M)
@@ -36,8 +36,14 @@ audio:
   prompt_ratio_max: 0.5
 
 training:
+<<<<<<< HEAD
   batch_size: 32            # Reduce if VRAM limited (e.g., to 16 or 24)
   learning_rate: 5.0e-5     # Slightly lower LR for larger model
+=======
+  # batch_size: 32
+  batch_size: 4
+  learning_rate: 1.0e-4
+>>>>>>> ed710ef38dbcdb185e7148c60030ccfed17effb7
   weight_decay: 0.01
   warmup_steps: 5000
   max_steps: 500000
