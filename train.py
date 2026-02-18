@@ -89,7 +89,7 @@ def train(args):
 
     # Build models
     dit, text_cond, dur_pred, flow = build_models(cfg, device)
-    if train_cfg.get("gradient_checkpointing", True):
+    if train_cfg.get("gradient_checkpointing", False):
         dit.enable_gradient_checkpointing()
         print("Gradient checkpointing enabled")
     print(f"DiT parameters: {dit.num_params / 1e6:.1f}M (trainable: {dit.num_trainable_params / 1e6:.1f}M)")
@@ -153,8 +153,24 @@ def train(args):
     # Null condition for CFG training
     null_text_kv = torch.zeros(1, 1, cfg["model"]["dit_dim"], device=device)
 
-    # Training loop
+    # Resume from checkpoint
     global_step = 0
+    if args.resume:
+        print(f"Resuming from checkpoint: {args.resume}")
+        ckpt = torch.load(args.resume, map_location=device, weights_only=False)
+        dit.load_state_dict(ckpt["dit"])
+        text_cond.projector.load_state_dict(ckpt["text_projector"])
+        dur_pred.load_state_dict(ckpt["dur_pred"])
+        optimizer.load_state_dict(ckpt["optimizer"])
+        scheduler.load_state_dict(ckpt["scheduler"])
+        if "scaler" in ckpt:
+            scaler.load_state_dict(ckpt["scaler"])
+        global_step = ckpt["global_step"]
+        print(f"Resumed at step {global_step}")
+        del ckpt
+        torch.cuda.empty_cache()
+
+    # Training loop
     dit.train()
     text_cond.projector.train()
     dur_pred.train()
@@ -199,8 +215,18 @@ def train(args):
                     text_features_for_dur = text_cond.encode_text(input_ids, attention_mask)
                 dur_loss = dur_pred.loss(text_features_for_dur, attention_mask, target_frames)
 
-                # Total loss
-                loss = fm_losses["loss"] + 0.1 * dur_loss
+                # Total loss (dur_weight decays linearly: 0.1 → 0.01 over steps 2000~5000)
+                dur_decay_start, dur_decay_end = 1200, 3500
+                dur_weight_start, dur_weight_end = 0.1, 0.01
+                if global_step < dur_decay_start:
+                    dur_weight = dur_weight_start
+                elif global_step > dur_decay_end:
+                    dur_weight = dur_weight_end
+                else:
+                    progress = (global_step - dur_decay_start) / (dur_decay_end - dur_decay_start)
+                    dur_weight = dur_weight_start + (dur_weight_end - dur_weight_start) * progress
+
+                loss = fm_losses["loss"] + dur_weight * dur_loss
 
                 # NaN check on loss
                 if torch.isnan(loss) or torch.isinf(loss):
@@ -214,6 +240,7 @@ def train(args):
                     "train/loss": loss.item(),
                     "train/fm_loss": fm_losses["loss"].item(),
                     "train/dur_loss": dur_loss.item(),
+                    "train/dur_weight": dur_weight,
                     "train/lr": scheduler.get_last_lr()[0],
                 })
 
@@ -239,7 +266,7 @@ def train(args):
             #         "lr": f"{lr:.2e}"
             #     })
             # Periodic inference with on-demand VAE
-            if global_step % 100 == 0:
+            if global_step % 500 == 0:
                 try:
                     dit.eval()
                     # Load VAE → infer → unload
@@ -275,7 +302,7 @@ def train(args):
                     dit.train()
 
             # Save checkpoint
-            if global_step % 2000 == 0:
+            if global_step % 2500 == 0:
                 ckpt_dir = os.path.join(args.output_dir, f"step_{global_step}")
                 os.makedirs(ckpt_dir, exist_ok=True)
                 torch.save({
@@ -284,6 +311,7 @@ def train(args):
                     "dur_pred": dur_pred.state_dict(),
                     "optimizer": optimizer.state_dict(),
                     "scheduler": scheduler.state_dict(),
+                    "scaler": scaler.state_dict(),
                     "global_step": global_step,
                     "config": cfg,
                 }, os.path.join(ckpt_dir, "checkpoint.pt"))
@@ -299,5 +327,6 @@ if __name__ == "__main__":
     parser.add_argument("--config", type=str, default="configs/model_medium.yaml")
     parser.add_argument("--data_root", type=str, required=True)
     parser.add_argument("--output_dir", type=str, default="checkpoints")
+    parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint.pt to resume from")
     args = parser.parse_args()
     train(args)

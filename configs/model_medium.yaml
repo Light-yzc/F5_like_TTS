@@ -7,9 +7,9 @@ model:
   # DiT
   # DiT (Large ~500M)
   latent_dim: 64
-  dit_dim: 1280             # Increased from 1024
-  depth: 28                 # Increased from 22
-  heads: 20                 # Increased from 16 (1280 / 20 = 64 head_dim)
+  dit_dim: 1024             # Increased from 1024
+  depth: 30                 # Increased from 22
+  heads: 16                 # Increased from 16 (1280 / 20 = 64 head_dim)
   head_dim: 64
   ff_mult: 2.5              # FFN intermediate = dit_dim * ff_mult
 
