@@ -17,8 +17,8 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.cuda.amp import GradScaler, autocast
 
-from models.dit_only_self_attn import DiTSelfAttnOnly as DiT
-from models.text_encoder import TextConditioner
+from models.dit import DiT
+from models.F5_like_text_encoder import F5TextEncoder, CharTokenizer
 from models.duration_predictor import DurationPredictor
 from models.flow_matching import FlowMatching
 from data.dataset import TTSDataset, collate_fn
@@ -35,31 +35,33 @@ def load_config(path: str) -> dict:
         return yaml.safe_load(f)
 
 
-def build_models(cfg: dict, device: torch.device):
+def build_models(cfg: dict, device: torch.device, char_tokenizer: CharTokenizer = None):
     model_cfg = cfg["model"]
+    dit_dim = model_cfg["dit_dim"]
 
-    # DiT
+    # DiT (with cross-attention + RoPE + AdaLN gate)
     dit = DiT(
         latent_dim=model_cfg["latent_dim"],
-        dit_dim=model_cfg["dit_dim"],
-        text_dim=model_cfg["text_encoder_dim"],
+        dit_dim=dit_dim,
         depth=model_cfg["depth"],
         heads=model_cfg["heads"],
         head_dim=model_cfg["head_dim"],
         ff_mult=model_cfg["ff_mult"],
     ).to(device)
 
-    # Text Conditioner (T5 encoder frozen + projector trainable)
-    text_cond = TextConditioner(
-        model_name=model_cfg["text_encoder_name"],
-        text_dim=model_cfg["text_encoder_dim"],
-        dit_dim=model_cfg["dit_dim"],
-        freeze=model_cfg["freeze_text_encoder"],
+    # F5-like Text Encoder (character-level, fully trainable)
+    vocab_size = model_cfg.get("text_encoder_vocab_size", 16384)
+    text_encoder = F5TextEncoder(
+        vocab_size=max(vocab_size, char_tokenizer.vocab_size) if char_tokenizer else vocab_size,
+        dim=dit_dim,
+        depth=model_cfg.get("text_conv_depth", 4),
+        kernel_size=model_cfg.get("text_conv_kernel", 7),
+        ff_mult=model_cfg.get("text_conv_ff_mult", 4),
     ).to(device)
 
-    # Duration Predictor
+    # Duration Predictor (input dim = dit_dim, same as F5TextEncoder output)
     dur_pred = DurationPredictor(
-        text_dim=model_cfg["text_encoder_dim"],
+        text_dim=dit_dim,
         hidden_dim=model_cfg["duration_hidden_dim"],
         num_layers=model_cfg["duration_num_layers"],
         latent_rate=cfg["audio"]["latent_rate"],
@@ -72,7 +74,7 @@ def build_models(cfg: dict, device: torch.device):
         default_infer_steps=model_cfg["default_infer_steps"],
     )
 
-    return dit, text_cond, dur_pred, flow
+    return dit, text_encoder, dur_pred, flow
 
 
     
@@ -93,16 +95,29 @@ def train(args):
     )
     print(f"Device: {device}")
 
+    # Load character vocabulary
+    vocab_path = args.vocab or os.path.join(args.data_root, "char_vocab.json")
+    if os.path.exists(vocab_path):
+        char_tokenizer = CharTokenizer.load(vocab_path)
+        print(f"Loaded char vocab from {vocab_path} ({char_tokenizer.vocab_size} chars)")
+    else:
+        print(f"Vocab not found at {vocab_path}, building from dataset...")
+        from build_char_vocab import build_vocab
+        vocab = build_vocab(args.data_root)
+        import json
+        os.makedirs(os.path.dirname(vocab_path) or ".", exist_ok=True)
+        with open(vocab_path, "w", encoding="utf-8") as f:
+            json.dump(vocab, f, ensure_ascii=False)
+        char_tokenizer = CharTokenizer(vocab)
+        print(f"Built and saved vocab ({char_tokenizer.vocab_size} chars)")
+
     # Build models
-    dit, text_cond, dur_pred, flow = build_models(cfg, device)
+    dit, text_encoder, dur_pred, flow = build_models(cfg, device, char_tokenizer)
     if train_cfg.get("gradient_checkpointing", False):
         dit.enable_gradient_checkpointing()
         print("Gradient checkpointing enabled")
     print(f"DiT parameters: {dit.num_params / 1e6:.1f}M (trainable: {dit.num_trainable_params / 1e6:.1f}M)")
-
-    # Tokenizer (for text encoding)
-    from transformers import AutoTokenizer
-    tokenizer = AutoTokenizer.from_pretrained(cfg["model"]["text_encoder_name"])
+    print(f"TextEncoder parameters: {text_encoder.num_params / 1e6:.1f}M")
 
     # Dataset
     dataset = TTSDataset(
@@ -113,7 +128,7 @@ def train(args):
         prompt_ratio_min=audio_cfg["prompt_ratio_min"],
         prompt_ratio_max=audio_cfg["prompt_ratio_max"],
     )
-    collate_with_tokenizer = partial(collate_fn, tokenizer=tokenizer)
+    collate_with_tokenizer = partial(collate_fn, tokenizer=char_tokenizer)
     dataloader = DataLoader(
         dataset,
         batch_size=train_cfg["batch_size"],
@@ -125,10 +140,10 @@ def train(args):
     )
     print(f"Dataset: {len(dataset)} samples")
 
-    # Optimizer (only trainable params)
+    # Optimizer (all trainable: DiT + TextEncoder + DurationPredictor)
     trainable_params = (
         list(dit.parameters())
-        + list(text_cond.projector.parameters())
+        + list(text_encoder.parameters())
         + list(dur_pred.parameters())
     )
     # optimizer = torch.optim.AdamW(
@@ -164,9 +179,10 @@ def train(args):
     if args.resume:
         print(f"Resuming from checkpoint: {args.resume}")
         ckpt = torch.load(args.resume, map_location=device, weights_only=False)
-        dit.load_state_dict(ckpt["dit"])
-        text_cond.projector.load_state_dict(ckpt["text_projector"])
-        dur_pred.load_state_dict(ckpt["dur_pred"])
+        dit.load_state_dict(ckpt["dit"], strict=False)
+        if "text_encoder" in ckpt:
+            text_encoder.load_state_dict(ckpt["text_encoder"])
+        dur_pred.load_state_dict(ckpt["dur_pred"], strict=False)
         optimizer.load_state_dict(ckpt["optimizer"])
         scheduler.load_state_dict(ckpt["scheduler"])
         if "scaler" in ckpt:
@@ -178,7 +194,7 @@ def train(args):
 
     # Training loop
     dit.train()
-    text_cond.projector.train()
+    text_encoder.train()
     dur_pred.train()
 
     print("Starting training...")
@@ -203,8 +219,8 @@ def train(args):
                 continue
 
             with autocast(enabled=train_cfg.get("fp16", True)):
-                # Text encoding
-                text_kv, text_mask = text_cond(input_ids, attention_mask)
+                # Text encoding (F5-like, fully trainable)
+                text_kv, text_mask = text_encoder(input_ids, attention_mask)
 
                 # Expand null condition to batch size
                 null_kv = null_text_kv.expand(latent.shape[0], -1, -1)
@@ -216,10 +232,8 @@ def train(args):
                     padding_mask=padding_mask,
                 )
 
-                # Duration predictor loss (on frozen text features)
-                with torch.no_grad():
-                    text_features_for_dur = text_cond.encode_text(input_ids, attention_mask)
-                dur_loss = dur_pred.loss(text_features_for_dur, attention_mask, target_frames)
+                # Duration predictor loss (detach text features)
+                dur_loss = dur_pred.loss(text_kv.detach(), attention_mask, target_frames)
 
                 # Total loss (dur_weight decays linearly: 0.1 → 0.01 over steps 2000~5000)
                 dur_decay_start, dur_decay_end = 1800, 3500
@@ -281,7 +295,7 @@ def train(args):
                     output_path = f"outputs/infer_step_{global_step}.wav"
                     os.makedirs("outputs", exist_ok=True)
                     inference(
-                        dit, text_cond, dur_pred, flow, cfg,
+                        dit, text_encoder, dur_pred, flow, cfg,
                         prompt_audio_path="ref_audio.wav",
                         prompt_text="八点十分",
                         tts_text="春天有野草",
@@ -313,13 +327,14 @@ def train(args):
                 os.makedirs(ckpt_dir, exist_ok=True)
                 torch.save({
                     "dit": dit.state_dict(),
-                    "text_projector": text_cond.projector.state_dict(),
+                    "text_encoder": text_encoder.state_dict(),
                     "dur_pred": dur_pred.state_dict(),
                     "optimizer": optimizer.state_dict(),
                     "scheduler": scheduler.state_dict(),
                     "scaler": scaler.state_dict(),
                     "global_step": global_step,
                     "config": cfg,
+                    "vocab_path": vocab_path,
                 }, os.path.join(ckpt_dir, "checkpoint.pt"))
                 # Save checkpoint
                 print(f"Saved checkpoint at step {global_step}")
@@ -334,5 +349,6 @@ if __name__ == "__main__":
     parser.add_argument("--data_root", type=str, required=True)
     parser.add_argument("--output_dir", type=str, default="checkpoints")
     parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint.pt to resume from")
+    parser.add_argument("--vocab", type=str, default=None, help="Path to char_vocab.json")
     args = parser.parse_args()
     train(args)

@@ -13,10 +13,11 @@ model:
   head_dim: 64
   ff_mult: 2.5              # FFN intermediate = dit_dim * ff_mult
 
-  # Text Encoder
-  text_encoder_name: "google/mt5-large"
-  text_encoder_dim: 1024
-  freeze_text_encoder: true
+  # F5-like Text Encoder (character-level + ConvNeXt)
+  text_encoder_vocab_size: 16384   # pre-allocated for multi-language
+  text_conv_depth: 6               # ConvNeXt blocks (more = richer context)
+  text_conv_kernel: 9              # depthwise conv kernel (larger = wider receptive field)
+  text_conv_ff_mult: 4             # ConvNeXt FFN expansion factor
 
   # Duration Predictor
   duration_hidden_dim: 512

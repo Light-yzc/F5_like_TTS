@@ -80,6 +80,12 @@ class CharTokenizer:
             }
         return {"input_ids": input_ids, "attention_mask": attention_mask}
 
+    def __call__(self, texts, padding=True, truncation=True, max_length=512,
+                 return_tensors="pt", **kwargs):
+        """HuggingFace-compatible interface for collate_fn."""
+        return self.batch_encode(texts, max_len=max_length if truncation else None,
+                                 return_tensors=(return_tensors == "pt"))
+
     def save(self, path: str):
         import json
         with open(path, "w", encoding="utf-8") as f:
