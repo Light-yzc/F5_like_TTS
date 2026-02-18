@@ -36,7 +36,7 @@ audio:
   prompt_ratio_max: 0.5
 
 training:
-  batch_size: 32            # Reduce if VRAM limited (e.g., to 16 or 24)
+  batch_size: 19            # Reduce if VRAM limited (e.g., to 16 or 24)
   learning_rate: 5.0e-5     # Slightly lower LR for larger model
   weight_decay: 0.01
   warmup_steps: 5000
