@@ -82,8 +82,13 @@ def train(args):
     train_cfg = cfg["training"]
     audio_cfg = cfg["audio"]
     wandb.login()
+    # Use a stable run_id derived from config path so resume always continues the same run
+    import hashlib
+    _run_id = hashlib.md5(os.path.abspath(args.config).encode()).hexdigest()[:8]
     wandb.init(
         project="vae_dit_tts",
+        id=_run_id,
+        resume="allow",
         config=cfg,
     )
     print(f"Device: {device}")
@@ -243,7 +248,7 @@ def train(args):
                     "train/dur_loss": dur_loss.item(),
                     "train/dur_weight": dur_weight,
                     "train/lr": scheduler.get_last_lr()[0],
-                })
+                }, step=global_step)
 
             # Backward
             optimizer.zero_grad()
