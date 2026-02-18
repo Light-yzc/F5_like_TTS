@@ -17,7 +17,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.cuda.amp import GradScaler, autocast
 
-from models.dit import DiT
+from models.dit_only_self_attn import DiTSelfAttnOnly as DiT
 from models.text_encoder import TextConditioner
 from models.duration_predictor import DurationPredictor
 from models.flow_matching import FlowMatching
@@ -42,11 +42,11 @@ def build_models(cfg: dict, device: torch.device):
     dit = DiT(
         latent_dim=model_cfg["latent_dim"],
         dit_dim=model_cfg["dit_dim"],
+        text_dim=model_cfg["text_encoder_dim"],
         depth=model_cfg["depth"],
         heads=model_cfg["heads"],
         head_dim=model_cfg["head_dim"],
         ff_mult=model_cfg["ff_mult"],
-        use_text_expand=True
     ).to(device)
 
     # Text Conditioner (T5 encoder frozen + projector trainable)

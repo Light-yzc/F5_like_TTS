@@ -15,7 +15,9 @@ import torch
 import torchaudio
 from torch.amp import autocast
 
-from models.dit import DiT
+# from models.dit import DiT
+from models.dit_only_self_attn import DiTSelfAttnOnly as DiT
+
 from models.text_encoder import TextConditioner
 from models.duration_predictor import DurationPredictor
 from models.flow_matching import FlowMatching
