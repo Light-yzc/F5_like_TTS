@@ -274,12 +274,14 @@ class DiT(nn.Module):
         head_dim: int = 64,
         ff_mult: float = 2.5,
         max_seq_len: int = 8192,
+        use_text_expand: bool = False,
     ):
         super().__init__()
         self.latent_dim = latent_dim
         self.dit_dim = dit_dim
         self.depth = depth
         self.gradient_checkpointing = False  # set via enable_gradient_checkpointing()
+        self.use_text_expand = use_text_expand
 
         # Input projection: [x_t ∥ prompt_mask] → dit_dim
         self.proj_in = nn.Linear(latent_dim + 1, dit_dim)
@@ -305,6 +307,56 @@ class DiT(nn.Module):
         nn.init.zeros_(self.proj_out.weight)
         nn.init.zeros_(self.proj_out.bias)
 
+    @staticmethod
+    def expand_text_to_frames(
+        text_kv: torch.Tensor,
+        text_mask: torch.Tensor,
+        T: int,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Expand text tokens to frame length via nearest-neighbor repeat.
+
+        Each valid token is repeated floor(T / L_valid) times.
+        Remaining frames (T % L_valid) are filled by extending the last token.
+
+        Args:
+            text_kv:   (B, L, dit_dim)
+            text_mask: (B, L)  1=valid token, 0=pad
+            T:         target frame count
+
+        Returns:
+            expanded:  (B, T, dit_dim)
+            new_mask:  (B, T)  all ones (no padding after expansion)
+        """
+        B, L, D = text_kv.shape
+        device = text_kv.device
+        dtype = text_kv.dtype
+
+        expanded_list = []
+        for b in range(B):
+            # Count valid (non-pad) tokens for this sample
+            valid_len = int(text_mask[b].sum().item())
+            valid_len = max(valid_len, 1)  # safety
+            valid_tokens = text_kv[b, :valid_len]  # (L_valid, D)
+
+            # How many frames per token (floor division)
+            repeat_base = T // valid_len
+            remainder = T % valid_len
+
+            # Each token gets repeat_base frames; last `remainder` tokens get +1
+            # Simpler: give first (valid_len - remainder) tokens repeat_base frames,
+            # last remainder tokens get (repeat_base + 1) frames.
+            repeats = torch.full((valid_len,), repeat_base, dtype=torch.long, device=device)
+            if remainder > 0:
+                repeats[-remainder:] += 1  # distribute remainder to the tail tokens
+
+            expanded = torch.repeat_interleave(valid_tokens, repeats, dim=0)  # (T, D)
+            expanded_list.append(expanded)
+
+        expanded = torch.stack(expanded_list, dim=0)  # (B, T, D)
+        new_mask = torch.ones(B, T, device=device, dtype=dtype)
+        return expanded, new_mask
+
     def forward(
         self,
         x_t: torch.Tensor,
@@ -324,6 +376,10 @@ class DiT(nn.Module):
             padding_mask: (B, T)             1=valid, 0=pad (for self-attention)
         """
         B, T, D = x_t.shape
+
+        # Optionally expand text tokens to frame length (nearest-neighbor repeat)
+        if self.use_text_expand:
+            text_kv, text_mask = self.expand_text_to_frames(text_kv, text_mask, T)
         L_text = text_kv.shape[1]
 
         # Concatenate prompt mask as extra channel
