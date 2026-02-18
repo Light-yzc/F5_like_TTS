@@ -46,6 +46,7 @@ def build_models(cfg: dict, device: torch.device):
         heads=model_cfg["heads"],
         head_dim=model_cfg["head_dim"],
         ff_mult=model_cfg["ff_mult"],
+        use_text_expand=True
     ).to(device)
 
     # Text Conditioner (T5 encoder frozen + projector trainable)
