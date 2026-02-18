@@ -110,6 +110,8 @@ class MultiHeadAttention(nn.Module):
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
         kv_mask: Optional[torch.Tensor] = None,
+        kv_rope_cos: Optional[torch.Tensor] = None,
+        kv_rope_sin: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         B, T, _ = x.shape
         kv_input = kv if self.is_cross and kv is not None else x
@@ -118,10 +120,17 @@ class MultiHeadAttention(nn.Module):
         k = self.k_proj(kv_input).view(B, -1, self.heads, self.head_dim).transpose(1, 2)
         v = self.v_proj(kv_input).view(B, -1, self.heads, self.head_dim).transpose(1, 2)
 
-        # Apply RoPE (only for self-attention)
-        if rope_cos is not None and not self.is_cross:
-            q = apply_rotary_emb(q, rope_cos, rope_sin)
-            k = apply_rotary_emb(k, rope_cos, rope_sin)
+        if self.is_cross:
+            # Cross-attn: Q gets audio-frame RoPE, K gets text-token RoPE (independent)
+            if rope_cos is not None:
+                q = apply_rotary_emb(q, rope_cos, rope_sin)
+            if kv_rope_cos is not None:
+                k = apply_rotary_emb(k, kv_rope_cos, kv_rope_sin)
+        else:
+            # Self-attn: shared RoPE for Q and K
+            if rope_cos is not None:
+                q = apply_rotary_emb(q, rope_cos, rope_sin)
+                k = apply_rotary_emb(k, rope_cos, rope_sin)
 
         # Attention with optional mask
         attn_mask = None
@@ -179,11 +188,11 @@ class DiTBlock(nn.Module):
 
     def __init__(self, dim: int, heads: int, head_dim: int = 64, ff_mult: float = 2.5):
         super().__init__()
-        # AdaLN-Zero: 6 modulation values (shift, scale, gate) × 2 (self-attn, ffn)
-        # self.scale_shift_table = nn.Parameter(
-        #     torch.randn(1, 6, dim) / dim**0.5
-        # )
-        self.scale_shift_table = nn.Parameter(torch.zeros(1, 6, dim))
+        # AdaLN-Zero: 8 modulation values
+        #   self-attn: shift_sa, scale_sa, gate_sa
+        #   cross-attn: scale_ca, gate_ca
+        #   ffn:        shift_ff, scale_ff, gate_ff
+        self.scale_shift_table = nn.Parameter(torch.zeros(1, 8, dim))
         # Self-Attention
         self.self_attn_norm = RMSNorm(dim)
         self.self_attn = MultiHeadAttention(dim, heads, head_dim, is_cross=False)
@@ -205,11 +214,13 @@ class DiTBlock(nn.Module):
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
         padding_mask: Optional[torch.Tensor] = None,
+        text_rope_cos: Optional[torch.Tensor] = None,
+        text_rope_sin: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        # AdaLN modulation parameters
-        shift_sa, scale_sa, gate_sa, shift_ff, scale_ff, gate_ff = (
+        # AdaLN modulation parameters (8 values)
+        shift_sa, scale_sa, gate_sa, scale_ca, gate_ca, shift_ff, scale_ff, gate_ff = (
             self.scale_shift_table + time_emb.unsqueeze(1)
-        ).chunk(6, dim=1)
+        ).chunk(8, dim=1)
         # Each: (B, 1, dim)
 
         # 1. Self-Attention with AdaLN-Zero (mask out padding frames)
@@ -217,10 +228,15 @@ class DiTBlock(nn.Module):
         h = self.self_attn(h, rope_cos=rope_cos, rope_sin=rope_sin, kv_mask=padding_mask)
         x = x + h * gate_sa
 
-        # 2. Cross-Attention (standard residual, no AdaLN gate)
-        h = self.cross_attn_norm(x)
-        h = self.cross_attn(h, kv=text_kv, kv_mask=text_mask)
-        x = x + h
+        # 2. Cross-Attention with AdaLN scale + gate
+        #    Q gets audio-frame RoPE, K gets independent text-token RoPE
+        h = self.cross_attn_norm(x) * (1 + scale_ca)
+        h = self.cross_attn(
+            h, kv=text_kv, kv_mask=text_mask,
+            rope_cos=rope_cos, rope_sin=rope_sin,
+            kv_rope_cos=text_rope_cos, kv_rope_sin=text_rope_sin,
+        )
+        x = x + h * gate_ca
 
         # 3. FFN with AdaLN-Zero
         h = self.ff_norm(x) * (1 + scale_ff) + shift_ff
@@ -308,6 +324,7 @@ class DiT(nn.Module):
             padding_mask: (B, T)             1=valid, 0=pad (for self-attention)
         """
         B, T, D = x_t.shape
+        L_text = text_kv.shape[1]
 
         # Concatenate prompt mask as extra channel
         if mask.dim() == 2:
@@ -319,8 +336,10 @@ class DiT(nn.Module):
         # Timestep embedding
         time_emb = self.time_embed(timestep)  # (B, dit_dim)
 
-        # RoPE
+        # Audio-frame RoPE (length = T)
         rope_cos, rope_sin = self.rotary_emb(T, x.device)
+        # Text-token RoPE (independent, length = L_text)
+        text_rope_cos, text_rope_sin = self.rotary_emb(L_text, x.device)
 
         # Transformer blocks
         for block in self.blocks:
@@ -328,10 +347,15 @@ class DiT(nn.Module):
                 x = checkpoint(
                     block, x, time_emb, text_kv, text_mask,
                     rope_cos, rope_sin, padding_mask,
+                    text_rope_cos, text_rope_sin,
                     use_reentrant=False,
                 )
             else:
-                x = block(x, time_emb, text_kv, text_mask, rope_cos, rope_sin, padding_mask)
+                x = block(
+                    x, time_emb, text_kv, text_mask,
+                    rope_cos, rope_sin, padding_mask,
+                    text_rope_cos, text_rope_sin,
+                )
 
         # Output projection with AdaLN
         shift, scale = (self.out_scale_shift + time_emb.unsqueeze(1)).chunk(2, dim=1)

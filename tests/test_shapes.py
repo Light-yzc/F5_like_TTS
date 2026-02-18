@@ -53,7 +53,9 @@ def test_dit_block():
     rope = RotaryEmbedding(64)
     cos, sin = rope(T, torch.device("cpu"))
 
-    out = block(x, time_emb, text_kv, text_mask, cos, sin)
+    text_rope = RotaryEmbedding(64)
+    text_cos, text_sin = text_rope(20, torch.device("cpu"))
+    out = block(x, time_emb, text_kv, text_mask, cos, sin, None, text_cos, text_sin)
     assert out.shape == (B, T, 256), f"DiTBlock shape mismatch: {out.shape}"
     print("✓ DiTBlock")
 

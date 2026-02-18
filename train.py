@@ -278,7 +278,7 @@ def train(args):
                         dit, text_cond, dur_pred, flow, cfg,
                         prompt_audio_path="ref_audio.wav",
                         prompt_text="八点十分",
-                        tts_text="春天有野草秋天有星空冬天只有冰冷大地的故乡",
+                        tts_text="春天有野草",
                         vae_encode_fn=lambda wav: vae_encode(vae, wav),
                         vae_decode_fn=lambda lat: vae_decode(vae, lat),
                         output_path=output_path,
