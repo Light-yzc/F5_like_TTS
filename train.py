@@ -178,11 +178,20 @@ def train(args):
             text_encoder.load_state_dict(ckpt["text_encoder"])
         dur_pred.load_state_dict(ckpt["dur_pred"], strict=False)
         optimizer.load_state_dict(ckpt["optimizer"])
-        scheduler.load_state_dict(ckpt["scheduler"])
         if "scaler" in ckpt:
             scaler.load_state_dict(ckpt["scaler"])
         global_step = ckpt["global_step"]
-        print(f"Resumed at step {global_step}")
+
+        # Override LR from config (in case it changed)
+        new_lr = train_cfg["learning_rate"]
+        for pg in optimizer.param_groups:
+            pg["lr"] = new_lr
+            pg["initial_lr"] = new_lr
+        # Rebuild scheduler with new base LR, fast-forward to current step
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+        for _ in range(global_step):
+            scheduler.step()
+        print(f"Resumed at step {global_step}, LR overridden to {new_lr}")
         del ckpt
         torch.cuda.empty_cache()
 
