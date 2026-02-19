@@ -24,7 +24,8 @@ from data.dataset import TTSDataset, collate_fn
 import bitsandbytes as bnb
 # import wandb
 
-
+os.environ['HF_HOME'] = r'E:\Code\HF_HOME'
+os.environ['TRANSFORMERS_CACHE'] = r'E:\Code\HF_HOME'
 
 def load_config(path: str) -> dict:
     with open(path, "r", encoding='utf-8') as f:
