@@ -192,14 +192,13 @@ def handle_FGO_audio_and_text(base_dir, processed, vae):
   df = pd.read_parquet(os.path.join(base_dir, 'table.parquet'))
   skipped = 0
   for index, row in tqdm(df.iterrows(), total=len(df), desc="Processing FGO dataset"):
-    # Sanitize filename: remove chars illegal on Windows (* ? < > | " : \)
     raw_filename = row['filename']
     safe_stem = re.sub(r'[*?<>|":\\]', '', raw_filename).replace('_', '-')
     out_pt = os.path.join(processed, safe_stem + '.pt')
 
     if os.path.exists(out_pt):
       text = row['voice_text']
-      speaker = re.sub(r'[*?<>|":\\]', '', str(row['char_name']))
+      speaker = str(row['char_name'])
       text_line.append(f"{speaker}_{safe_stem}.pt_{text}\n")
       continue
 
@@ -218,16 +217,16 @@ def handle_FGO_audio_and_text(base_dir, processed, vae):
       torch.save(latent, out_pt)
 
       text = row['voice_text']
-      speaker = re.sub(r'[*?<>|":\\]', '', str(row['char_name']))
+      speaker = str(row['char_name'])
       text_line.append(f"{speaker}_{safe_stem}.pt_{text}\n")
     except Exception as e:
       print(f"\n  Skipping {raw_filename}: {e}")
       skipped += 1
-    finally:
-      # Free GPU memory every iteration
-      del wav, latent
-      if index % 100 == 0:
-        torch.cuda.empty_cache()
+    # finally:
+    #   # Free GPU memory every iteration
+    #   del wav, latent
+    #   if index % 100 == 0:
+    #     torch.cuda.empty_cache()
 
   print(f"Skipped {skipped} files")
   with open(os.path.join(processed, 'content.txt'), 'w', encoding='utf-8') as fout:
