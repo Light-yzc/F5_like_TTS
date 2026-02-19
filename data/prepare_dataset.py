@@ -149,29 +149,51 @@ def handle_LibriTTS_audio_and_text(base_dir, processed, vae):
 
 def handle_FGO_audio_and_text(base_dir, processed, vae):
   import pandas as pd
+  import re
   if not os.path.exists(processed):
     os.makedirs(processed)
   text_line = []
   df = pd.read_parquet(os.path.join(base_dir, 'table.parquet'))
-  for index, row in tqdm(df.iterrows(), total=len(df),desc="Processing FGO dataset"):
-    if os.path.exists(os.path.join(processed, row['filename'].replace('_', '-') + '.pt')):
+  skipped = 0
+  for index, row in tqdm(df.iterrows(), total=len(df), desc="Processing FGO dataset"):
+    # Sanitize filename: remove chars illegal on Windows (* ? < > | " : \)
+    raw_filename = row['filename']
+    safe_stem = re.sub(r'[*?<>|":\\]', '', raw_filename).replace('_', '-')
+    out_pt = os.path.join(processed, safe_stem + '.pt')
+
+    if os.path.exists(out_pt):
       text = row['voice_text']
-      speaker = row['char_name']
-      save_file_stem = row['filename'].replace('_', '-')
-      text_line.append(f"{speaker}_{save_file_stem}.pt_{text}\n")
-      print('pass!')
+      speaker = re.sub(r'[*?<>|":\\]', '', str(row['char_name']))
+      text_line.append(f"{speaker}_{safe_stem}.pt_{text}\n")
       continue
-    wav, sr = torchaudio.load(os.path.join(base_dir, row['filename']))
-    if sr != 48000:
-        wav = torchaudio.functional.resample(wav, orig_freq=sr, new_freq=48000)
-    wav = torch.clamp(wav, -1.0, 1.0).to(device=vae.device, dtype=vae.dtype).unsqueeze(1).repeat(1, 2, 1)
-    latent = vae_encode(vae, wav)
-    latent = latent.squeeze(0).cpu()  # (T, D)
-    save_file_stem = row['filename'].replace('_', '-')
-    torch.save(latent, os.path.join(processed, save_file_stem + '.pt'))
-    text = row['voice_text']
-    speaker = row['char_name']
-    text_line.append(f"{speaker}_{save_file_stem}.pt_{text}\n")
+
+    audio_path = os.path.join(base_dir, raw_filename)
+    if not os.path.exists(audio_path):
+      skipped += 1
+      continue
+
+    try:
+      wav, sr = torchaudio.load(audio_path)
+      if sr != 48000:
+          wav = torchaudio.functional.resample(wav, orig_freq=sr, new_freq=48000)
+      wav = torch.clamp(wav, -1.0, 1.0).to(device=vae.device, dtype=vae.dtype).unsqueeze(1).repeat(1, 2, 1)
+      latent = vae_encode(vae, wav)
+      latent = latent.squeeze(0).cpu()  # (T, D)
+      torch.save(latent, out_pt)
+
+      text = row['voice_text']
+      speaker = re.sub(r'[*?<>|":\\]', '', str(row['char_name']))
+      text_line.append(f"{speaker}_{safe_stem}.pt_{text}\n")
+    except Exception as e:
+      print(f"\n  Skipping {raw_filename}: {e}")
+      skipped += 1
+    finally:
+      # Free GPU memory every iteration
+      del wav, latent
+      if index % 100 == 0:
+        torch.cuda.empty_cache()
+
+  print(f"Skipped {skipped} files")
   with open(os.path.join(processed, 'content.txt'), 'w', encoding='utf-8') as fout:
     fout.writelines(text_line)
 

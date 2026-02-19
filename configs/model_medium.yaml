@@ -45,4 +45,5 @@ training:
   scheduler: cosine
   gradient_clip: 1.0
   fp16: true
+  gradient_checkpointing: true
   gradient_accumulation_steps: 1
