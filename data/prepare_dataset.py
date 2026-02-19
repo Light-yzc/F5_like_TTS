@@ -30,6 +30,11 @@ import torch
 import torchaudio
 from tqdm import tqdm
 from pathlib import Path
+
+# Add project root to sys.path to allow importing from models
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 from models.vae import load_vae, vae_encode
 
 
