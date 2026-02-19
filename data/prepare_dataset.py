@@ -125,24 +125,60 @@ def handle_LibriTTS_audio_and_text(base_dir, processed, vae):
     text_line = []
     if not os.path.exists(processed):
       os.makedirs(processed)
+    skipped = 0
+    count = 0
     for child in tqdm(list(path.iterdir()), desc="Processing LibriTTS dataset"):
       if not child.is_dir():
         continue
       for child_1 in child.iterdir():
+          if not child_1.is_dir():
+            continue
           files = [f for f in child_1.iterdir() if f.is_file() and f.suffix == '.wav']
           for file in files:
-                  wav, sr = torchaudio.load(file)
-                  if sr != 48000:
-                      wav = torchaudio.functional.resample(wav, orig_freq=sr, new_freq=48000)
-                  wav = torch.clamp(wav, -1.0, 1.0).to(device=vae.device, dtype=vae.dtype).unsqueeze(1).repeat(1, 2, 1)
-                  latent = vae_encode(vae, wav)
-                  latent = latent.squeeze(0).cpu()  # (T, D)
-                  save_file_stem = file.stem.replace('_', '-')
-                  torch.save(latent, os.path.join(processed, save_file_stem + '.pt'))
-                  with open(os.path.join(child_1, f'{file.stem}.normalized.txt'), 'r', encoding='utf-8') as f:
-                      text = f.read().strip()
-                      speaker = child.name  # e.g. 01
-                      text_line.append(f"{speaker}_{save_file_stem}.pt_{text}\n")
+            save_file_stem = file.stem.replace('_', '-')
+            out_pt = os.path.join(processed, save_file_stem + '.pt')
+            speaker = child.name
+
+            # Skip if already encoded
+            if os.path.exists(out_pt):
+              # Still need text for content.txt
+              txt_path = os.path.join(child_1, f'{file.stem}.normalized.txt')
+              if os.path.exists(txt_path):
+                with open(txt_path, 'r', encoding='utf-8') as f:
+                  text = f.read().strip()
+                text_line.append(f"{speaker}_{save_file_stem}.pt_{text}\n")
+              continue
+
+            # Read text — skip if missing
+            txt_path = os.path.join(child_1, f'{file.stem}.normalized.txt')
+            if not os.path.exists(txt_path):
+              skipped += 1
+              continue
+            with open(txt_path, 'r', encoding='utf-8') as f:
+              text = f.read().strip()
+
+            try:
+              wav, sr = torchaudio.load(file)
+              if sr != 48000:
+                  wav = torchaudio.functional.resample(wav, orig_freq=sr, new_freq=48000)
+              wav = torch.clamp(wav, -1.0, 1.0).to(device=vae.device, dtype=vae.dtype).unsqueeze(1).repeat(1, 2, 1)
+              latent = vae_encode(vae, wav)
+              latent = latent.squeeze(0).cpu()  # (T, D)
+              torch.save(latent, out_pt)
+              text_line.append(f"{speaker}_{save_file_stem}.pt_{text}\n")
+              count += 1
+            except Exception as e:
+              print(f"\n  Skipping {file.name}: {e}")
+              skipped += 1
+            # finally:
+            #   # Free GPU memory
+            #   for v in ['wav', 'latent']:
+            #     if v in locals():
+            #       del locals()[v]
+            #   if count % 100 == 0:
+            #     torch.cuda.empty_cache()
+
+    print(f"Processed {count}, skipped {skipped}")
     with open(os.path.join(processed, 'content.txt'), 'w', encoding='utf-8') as fout:
       fout.writelines(text_line)
 
