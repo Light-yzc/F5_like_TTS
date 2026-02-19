@@ -5,39 +5,40 @@ vae:
   precision: "fp16"
 model:
   # DiT
-  latent_dim: 64            # VAE latent dimension (adjust to your VAE)
-  dit_dim: 1024             # Transformer hidden dimension
-  depth: 22                 # Number of DiT blocks
-  heads: 16                 # Number of attention heads
-  head_dim: 64              # head_dim = dit_dim / heads
+  # DiT (Large ~500M)
+  latent_dim: 64
+  dit_dim: 1024             # Increased from 1024
+  depth: 30                 # Increased from 22
+  heads: 16                 # Increased from 16 (1280 / 20 = 64 head_dim)
+  head_dim: 64
   ff_mult: 2.5              # FFN intermediate = dit_dim * ff_mult
-  
-  # Text Encoder
-  text_encoder_name: "google/mt5-large"
-  text_encoder_dim: 1024    # mt5-large hidden size
-  freeze_text_encoder: true
-  
+
+  # F5-like Text Encoder (character-level + ConvNeXt)
+  text_encoder_vocab_size: 16384   # pre-allocated for multi-language
+  text_conv_depth: 6               # ConvNeXt blocks (more = richer context)
+  text_conv_kernel: 9              # depthwise conv kernel (larger = wider receptive field)
+  text_conv_ff_mult: 4             # ConvNeXt FFN expansion factor
+
   # Duration Predictor
   duration_hidden_dim: 512
   duration_num_layers: 2
-  
+
   # Flow Matching
-  cfg_dropout_rate: 0.15    # Probability of dropping text condition
+  cfg_dropout_rate: 0.15
   default_cfg_scale: 3.0
   default_infer_steps: 30
 
 audio:
   sample_rate: 48000
-  latent_rate: 25           # VAE compression: 48000Hz → 25Hz
+  latent_rate: 25
   max_duration_sec: 30
   min_duration_sec: 3
-  prompt_ratio_min: 0.2     # Minimum prompt proportion
-  prompt_ratio_max: 0.5     # Maximum prompt proportion
+  prompt_ratio_min: 0.2
+  prompt_ratio_max: 0.5
 
 training:
-  # batch_size: 32
-  batch_size: 4
-  learning_rate: 1.0e-4
+  batch_size: 19            # Reduce if VRAM limited (e.g., to 16 or 24)
+  learning_rate: 5.0e-5     # Slightly lower LR for larger model
   weight_decay: 0.01
   warmup_steps: 5000
   max_steps: 500000

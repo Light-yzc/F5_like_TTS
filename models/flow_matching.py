@@ -48,54 +48,63 @@ class FlowMatching:
     def compute_loss(
         self,
         dit_model: torch.nn.Module,
-        prompt_latent: torch.Tensor,
-        target_latent: torch.Tensor,
+        latent: torch.Tensor,
+        prompt_mask: torch.Tensor,
+        target_mask: torch.Tensor,
         text_kv: torch.Tensor,
         text_mask: torch.Tensor,
         null_text_kv: Optional[torch.Tensor] = None,
+        padding_mask: Optional[torch.Tensor] = None,
     ) -> dict[str, torch.Tensor]:
         """
-        Compute flow matching training loss.
+        Compute flow matching training loss on packed latent.
 
         Args:
-            dit_model:      DiT model
-            prompt_latent:  (B, T_prompt, D) clean prompt latent
-            target_latent:  (B, T_gen, D) clean target latent
-            text_kv:        (B, L_text, dit_dim) text conditioning
-            text_mask:      (B, L_text) text attention mask
-            null_text_kv:   (B, L_null, dit_dim) null condition for CFG training
+            dit_model:    DiT model
+            latent:       (B, T, D) packed [prompt | target | pad] latent
+            prompt_mask:  (B, T) 1=prompt frame, 0=other
+            target_mask:  (B, T) 1=valid target frame, 0=other
+            text_kv:      (B, L_text, dit_dim) text conditioning
+            text_mask:    (B, L_text) text attention mask
+            null_text_kv: (B, L_null, dit_dim) null condition for CFG training
+            padding_mask: (B, T) 1=valid (prompt or target), 0=pad
 
         Returns:
             dict with 'loss' and 'mse' keys
         """
-        B, T_gen, D = target_latent.shape
-        T_prompt = prompt_latent.shape[1]
-        device = target_latent.device
-        dtype = target_latent.dtype
+        B, T, D = latent.shape
+        device = latent.device
+        dtype = latent.dtype
 
         # Sample timestep t ~ U(0, 1) for each sample
         t = torch.rand(B, device=device, dtype=dtype)
 
-        # Sample noise
-        noise = torch.randn_like(target_latent)
+        # Sample noise (same shape as full sequence)
+        noise = torch.randn_like(latent)
 
-        # Interpolate: x_t = (1 - t) * x0 + t * noise
-        t_ = t.view(B, 1, 1)
-        x_t_gen = (1 - t_) * target_latent + t_ * noise
+        # Target velocity: v = noise - x0 (only meaningful where target_mask=1)
+        v_target = noise - latent
 
-        # Construct full sequence
-        x_t = torch.cat([prompt_latent, x_t_gen], dim=1)  # (B, T_total, D)
-        mask = torch.cat([
-            torch.ones(B, T_prompt, device=device, dtype=dtype),
-            torch.zeros(B, T_gen, device=device, dtype=dtype),
-        ], dim=1)  # (B, T_total)
+        # Add noise ONLY to target region, keep prompt clean
+        # x_t = prompt_data (where prompt) + interpolated (where target) + 0 (where pad)
+        t_ = t.view(B, 1, 1)  # (B, 1, 1)
+        target_mask_3d = target_mask.unsqueeze(-1)  # (B, T, 1)
+        prompt_mask_3d = prompt_mask.unsqueeze(-1)   # (B, T, 1)
+
+        x_t = (
+            prompt_mask_3d * latent  # prompt frames: clean data
+            + target_mask_3d * ((1 - t_) * latent + t_ * noise)  # target: noisy
+            # padding frames: 0 (neither mask is 1)
+        )
+
+        # Mask channel for DiT input: prompt_mask (1=prompt, 0=other)
+        mask_channel = prompt_mask
 
         # CFG training: randomly drop text condition
         if null_text_kv is not None and self.cfg_dropout_rate > 0:
             drop = torch.rand(B, device=device) < self.cfg_dropout_rate
             drop = drop.view(B, 1, 1)
             text_kv_train = torch.where(drop, null_text_kv.expand_as(text_kv), text_kv)
-            # Also mask the text attention when dropped
             null_mask = torch.ones(B, text_kv.shape[1], device=device, dtype=text_mask.dtype)
             text_mask_train = torch.where(
                 drop.squeeze(-1), null_mask, text_mask
@@ -104,14 +113,17 @@ class FlowMatching:
             text_kv_train = text_kv
             text_mask_train = text_mask
 
-        # Forward
-        v_pred = dit_model(x_t, mask, t, text_kv_train, text_mask_train)
+        # Forward through DiT
+        v_pred = dit_model(
+            x_t, mask_channel, t, text_kv_train, text_mask_train,
+            padding_mask=padding_mask,
+        )
 
-        # Target velocity: v = noise - x0
-        v_target = noise - target_latent
-
-        # Loss: only on generation region
-        loss = F.mse_loss(v_pred[:, T_prompt:], v_target)
+        # Loss: only on valid target frames (where target_mask=1)
+        sq_error = (v_pred - v_target).pow(2)  # (B, T, D)
+        masked_error = sq_error * target_mask_3d  # zero out non-target
+        num_target_elements = target_mask.sum() * D  # total valid elements
+        loss = masked_error.sum() / (num_target_elements + 1e-8)
 
         return {
             "loss": loss,
@@ -195,6 +207,9 @@ class FlowMatching:
             torch.zeros(B, T_gen, device=device, dtype=dtype),
         ], dim=1)
 
+        # Padding mask: all valid during inference (no batch padding)
+        padding_mask = torch.ones(B, T_total, device=device, dtype=dtype)
+
         # Time schedule
         t_span = self._get_time_schedule(n_steps, device, dtype)
 
@@ -208,11 +223,11 @@ class FlowMatching:
             dt = t_span[i + 1] - t_span[i]  # Negative (going from 1 → 0)
 
             # Conditional prediction
-            v_cond = dit_model(x, mask, t_cur, text_kv, text_mask)
+            v_cond = dit_model(x, mask, t_cur, text_kv, text_mask, padding_mask=padding_mask)
 
             if cfg_scale > 0 and null_text_kv is not None:
                 # Unconditional prediction
-                v_uncond = dit_model(x, mask, t_cur, null_text_kv, null_text_mask)
+                v_uncond = dit_model(x, mask, t_cur, null_text_kv, null_text_mask, padding_mask=padding_mask)
                 # CFG: v = v_uncond + scale * (v_cond - v_uncond)
                 v = v_uncond + cfg_scale * (v_cond - v_uncond)
             else:

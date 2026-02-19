@@ -46,12 +46,15 @@ class TextConditioner(nn.Module):
         input_ids: torch.LongTensor,
         attention_mask: torch.Tensor,
     ) -> torch.Tensor:
-        """Encode text with frozen T5 encoder."""
-        outputs = self.encoder(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-        )
-        return outputs.last_hidden_state  # (B, L, text_dim)
+        """Encode text with frozen T5 encoder (always in fp32 to avoid NaN)."""
+        # T5/mT5 relative position bias overflows in fp16 → NaN
+        # Force fp32 even when called inside autocast context
+        with torch.amp.autocast('cuda', enabled=False):
+            outputs = self.encoder(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+            )
+            return outputs.last_hidden_state  # (B, L, text_dim)
 
     def forward(
         self,

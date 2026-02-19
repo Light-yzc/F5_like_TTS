@@ -43,7 +43,12 @@ def vae_encode(vae, waveform: torch.Tensor) -> torch.Tensor:
     """
     if waveform.dim() == 2:
         waveform = waveform.unsqueeze(1)  # (B, samples) → (B, 1, samples)
-    latent = vae.encode(waveform).latent_dist.sample()  # deterministic
+    # VAE expects 2-channel audio; duplicate mono → stereo
+    if waveform.shape[1] == 1:
+        waveform = waveform.repeat(1, 2, 1)  # (B, 1, S) → (B, 2, S)
+    # Match VAE dtype and device
+    waveform = waveform.to(device=vae.device, dtype=vae.dtype)
+    latent = vae.encode(waveform).latent_dist.sample()
     # AutoencoderOobleck returns (B, D, T), transpose to (B, T, D)
     if latent.dim() == 3 and latent.shape[1] != latent.shape[2]:
         latent = latent.transpose(1, 2)  # (B, D, T) → (B, T, D)
@@ -57,9 +62,14 @@ def vae_decode(vae, latent: torch.Tensor) -> torch.Tensor:
     Args:
         latent: (B, T, D) latent representation
     Returns:
-        waveform: (B, 1, samples) audio tensor at 48kHz
+        waveform: (B, 1, samples) mono audio tensor at 48kHz
     """
+    latent = latent.to(device=vae.device, dtype=vae.dtype)
     # AutoencoderOobleck expects (B, D, T)
     if latent.dim() == 3:
         latent = latent.transpose(1, 2)  # (B, T, D) → (B, D, T)
-    return vae.decode(latent).sample
+    waveform = vae.decode(latent).sample  # (B, 2, samples)
+    # Stereo → mono for TTS
+    if waveform.shape[1] == 2:
+        waveform = waveform.mean(dim=1, keepdim=True)  # (B, 1, samples)
+    return waveform
