@@ -283,21 +283,23 @@ def train(args):
             if global_step % 500 == 0:
                 try:
                     dit.eval()
+                    text_encoder.eval()
                     # Load VAE → infer → unload
                     vae_cfg = cfg["vae"]
                     vae = load_vae(vae_cfg["model_path"], device=str(device), precision=vae_cfg.get("precision", "fp16"))
                     output_path = f"outputs/infer_step_{global_step}.wav"
                     os.makedirs("outputs", exist_ok=True)
-                    inference(
-                        dit, text_encoder, dur_pred, flow, cfg,
-                        prompt_audio_path="ref_audio.wav",
-                        prompt_text="八点十分",
-                        tts_text="春天有野草",
-                        char_tokenizer=char_tokenizer,
-                        vae_encode_fn=lambda wav: vae_encode(vae, wav),
-                        vae_decode_fn=lambda lat: vae_decode(vae, lat),
-                        output_path=output_path,
-                    )
+                    with torch.no_grad():
+                        inference(
+                            dit, text_encoder, dur_pred, flow, cfg,
+                            prompt_audio_path="ref_audio.wav",
+                            prompt_text="八点十分",
+                            tts_text="春天有野草",
+                            char_tokenizer=char_tokenizer,
+                            vae_encode_fn=lambda wav: vae_encode(vae, wav),
+                            vae_decode_fn=lambda lat: vae_decode(vae, lat),
+                            output_path=output_path,
+                        )
                     # Log audio to wandb
                     if os.path.exists(output_path):
                         wandb.log({
@@ -307,14 +309,16 @@ def train(args):
                                 caption=f"step_{global_step}",
                             ),
                         }, step=global_step)
-                    # Unload VAE to free VRAM
-                    del vae
-                    torch.cuda.empty_cache()
-                    gc.collect()
                 except Exception as e:
                     print(f"[Step {global_step}] Inference failed: {e}")
                 finally:
+                    # Aggressively free VRAM
+                    if 'vae' in locals():
+                        del vae
+                    gc.collect()
+                    torch.cuda.empty_cache()
                     dit.train()
+                    text_encoder.train()
 
             # Save checkpoint
             if global_step % 2500 == 0:
