@@ -81,6 +81,9 @@ class TTSDataset(Dataset):
     def _load_latent(self, path: str) -> torch.Tensor:
         """Load latent and clamp to valid length range."""
         latent = torch.load(path, map_location="cpu", weights_only=True)
+        # Handle stereo latents: (C, T, D) → (T, D) via channel average
+        if latent.dim() == 3:
+            latent = latent.mean(dim=0)  # average over channels
         if latent.shape[0] > self.max_frames:
             start = random.randint(0, latent.shape[0] - self.max_frames)
             latent = latent[start : start + self.max_frames]
