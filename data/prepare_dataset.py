@@ -154,6 +154,13 @@ def handle_FGO_audio_and_text(base_dir, processed, vae):
   text_line = []
   df = pd.read_parquet(os.path.join(base_dir, 'table.parquet'))
   for index, row in tqdm(df.iterrows(), total=len(df),desc="Processing FGO dataset"):
+    if os.path.exists(os.path.join(processed, row['filename'].replace('_', '-') + '.pt')):
+      text = row['voice_text']
+      speaker = row['char_name']
+      save_file_stem = row['filename'].replace('_', '-')
+      text_line.append(f"{speaker}_{save_file_stem}.pt_{text}\n")
+      print('pass!')
+      continue
     wav, sr = torchaudio.load(os.path.join(base_dir, row['filename']))
     if sr != 48000:
         wav = torchaudio.functional.resample(wav, orig_freq=sr, new_freq=48000)
@@ -195,37 +202,37 @@ def handle_txt(base_dir: str, processed_dir: str, split: str):
 
     print(f"Processed text for {split}: {out_txt}")
 
+with torch.no_grad():
+  def main():
+      parser = argparse.ArgumentParser(description="Preprocess dataset for VAE-DiT TTS")
+      parser.add_argument("--base_dir", type=str, required=True, help="Path to raw dataset (AISHELL-3)")
+      parser.add_argument("--processed_dir", type=str, default=None, help="Output directory")
+      parser.add_argument("--vae_path", type=str, default="models/vae_model", help="Path to VAE model")
+      parser.add_argument("--splits", nargs="+", default=["train", "test"])
+      parser.add_argument("--dataset_name", type=str, default="AISHELL-3", help="dataset name")
+      args = parser.parse_args()
 
-def main():
-    parser = argparse.ArgumentParser(description="Preprocess dataset for VAE-DiT TTS")
-    parser.add_argument("--base_dir", type=str, required=True, help="Path to raw dataset (AISHELL-3)")
-    parser.add_argument("--processed_dir", type=str, default=None, help="Output directory")
-    parser.add_argument("--vae_path", type=str, default="models/vae_model", help="Path to VAE model")
-    parser.add_argument("--splits", nargs="+", default=["train", "test"])
-    parser.add_argument("--dataset_name", type=str, default="AISHELL-3", help="dataset name")
-    args = parser.parse_args()
+      if args.processed_dir is None:
+          args.processed_dir = os.path.join(args.base_dir, 'processed')
 
-    if args.processed_dir is None:
-        args.processed_dir = os.path.join(args.base_dir, 'processed')
-
-    # Process text first (fast)
-    if args.dataset_name == "AISHELL-3":
-      for split in args.splits:
-        handle_txt(args.base_dir, args.processed_dir, split)
- 
-    # Load VAE and encode audio
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    vae = load_vae(args.vae_path, device=device,precision='fp16')
-    if args.dataset_name == "AISHELL-3":
-      for split in args.splits:
-          handle_wav(args.base_dir, args.processed_dir, split, vae)
-    elif args.dataset_name == "jvs":
-      handle_jvs_audio_and_text(args.base_dir, args.processed_dir, vae)
-    elif args.dataset_name == "LibriTTS":
-      handle_LibriTTS_audio_and_text(args.base_dir, args.processed_dir, vae)
-    elif args.dataset_name == "FGO":
-      handle_FGO_audio_and_text(args.base_dir, args.processed_dir, vae)
-    print("Done!")
+      # Process text first (fast)
+      if args.dataset_name == "AISHELL-3":
+        for split in args.splits:
+          handle_txt(args.base_dir, args.processed_dir, split)
+  
+      # Load VAE and encode audio
+      device = "cuda" if torch.cuda.is_available() else "cpu"
+      vae = load_vae(args.vae_path, device=device,precision='fp16')
+      if args.dataset_name == "AISHELL-3":
+        for split in args.splits:
+            handle_wav(args.base_dir, args.processed_dir, split, vae)
+      elif args.dataset_name == "jvs":
+        handle_jvs_audio_and_text(args.base_dir, args.processed_dir, vae)
+      elif args.dataset_name == "LibriTTS":
+        handle_LibriTTS_audio_and_text(args.base_dir, args.processed_dir, vae)
+      elif args.dataset_name == "FGO":
+        handle_FGO_audio_and_text(args.base_dir, args.processed_dir, vae)
+      print("Done!")
 
 
 if __name__ == "__main__":
