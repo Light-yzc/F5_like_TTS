@@ -71,6 +71,80 @@ def handle_wav(base_dir: str, processed_dir: str, split: str, vae):
             out_name = f"{file.parent.name}_{file.stem}.pt"
             torch.save(latent, os.path.join(out_wav_dir, out_name))
 
+def handle_jvs_audio_and_text(base_dir, processed, vae):
+    """
+    jvs/jvsxxx/falsetxx/*wav
+    jvs/jvsxxx/falsetxx/*txt
+    """
+    path = Path(base_dir)
+    text_line = []
+    if not os.path.exists(processed):
+      os.makedirs(processed)
+    for child in tqdm(list(path.iterdir()), desc="Processing JVS dataset"):
+      if not child.is_dir():
+        continue
+      for child_1 in ['parallel100', 'nonpara30', 'whisper10']:
+          audio_path = child / child_1 / 'wav24kHz16bit'
+          files = [f for f in audio_path.iterdir() if f.is_file()]
+          for file in files:
+              if file.suffix == '.wav':
+                  wav, sr = torchaudio.load(file)
+                  if sr != 48000:
+                      wav = torchaudio.functional.resample(wav, orig_freq=sr, new_freq=48000)
+                  wav = torch.clamp(wav, -1.0, 1.0).to(device=vae.device, dtype=vae.dtype).unsqueeze(1).repeat(1, 2, 1)
+                  latent = vae_encode(vae, wav)
+                  latent = latent.squeeze(0).cpu()  # (T, D)
+                  if child_1 != 'whisper10':
+                    out_name = f"{child.name}-normal-{child.name +file.stem.replace('_', '-')}.pt"
+                  else:
+                    out_name = f"{child.name}-whisper-{child.name +file.stem.replace('_', '-')}.pt"
+                  torch.save(latent, os.path.join(processed, out_name))
+          with open(os.path.join(child, child_1, 'transcripts_utf8.txt'), 'r', encoding='utf-8') as f:
+            for line in f:
+              line = line.strip()
+              if not line:
+                continue
+              parts = line.split(':')
+              file_name = parts[0]  # e.g. *.wav
+              speaker = child.name  # e.g. jvs001
+              only_text = parts[1]
+              if child_1 != 'whisper10':
+                out_name = f"{speaker}-normal_{child.name}-normal-{child.name +file_name.replace('_', '-')}.pt" #speaker_file_name_content to match previous dataset
+              else:
+                out_name = f"{speaker}-whisper_{child.name}-whisper-{child.name +file_name.replace('_', '-')}.pt"
+              text_line.append(f"{out_name}_{only_text}\n")
+    with open(os.path.join(processed, 'content.txt'), 'w', encoding='utf-8') as fout:
+      fout.writelines(text_line)
+                
+
+def handle_LibriTTS_audio_and_text(base_dir, processed, vae):
+    """
+    LibriTTS/train/speaker/char./wav txt
+    """
+    path = Path(base_dir)
+    text_line = []
+    if not os.path.exists(processed):
+      os.makedirs(processed)
+    for child in tqdm(list(path.iterdir()), desc="Processing LibriTTS dataset"):
+      if not child.is_dir():
+        continue
+      for child_1 in child.iterdir():
+          files = [f for f in child_1.iterdir() if f.is_file() and f.suffix == '.wav']
+          for file in files:
+                  wav, sr = torchaudio.load(file)
+                  if sr != 48000:
+                      wav = torchaudio.functional.resample(wav, orig_freq=sr, new_freq=48000)
+                  wav = torch.clamp(wav, -1.0, 1.0).to(device=vae.device, dtype=vae.dtype).unsqueeze(1).repeat(1, 2, 1)
+                  latent = vae_encode(vae, wav)
+                  latent = latent.squeeze(0).cpu()  # (T, D)
+                  save_file_stem = file.stem.replace('_', '-')
+                  torch.save(latent, os.path.join(processed, save_file_stem + '.pt'))
+                  with open(os.path.join(child_1, f'{file.stem}.normalized.txt'), 'r', encoding='utf-8') as f:
+                      text = f.read().strip()
+                      speaker = child.name  # e.g. 01
+                      text_line.append(f"{speaker}_{save_file_stem}.pt_{text}\n")
+    with open(os.path.join(processed, 'content.txt'), 'w', encoding='utf-8') as fout:
+      fout.writelines(text_line)
 
 def handle_txt(base_dir: str, processed_dir: str, split: str):
     """
@@ -106,21 +180,27 @@ def main():
     parser.add_argument("--processed_dir", type=str, default=None, help="Output directory")
     parser.add_argument("--vae_path", type=str, default="models/vae_model", help="Path to VAE model")
     parser.add_argument("--splits", nargs="+", default=["train", "test"])
+    parser.add_argument("--dataset_name", type=str, default="AISHELL-3", help="dataset name")
     args = parser.parse_args()
 
     if args.processed_dir is None:
         args.processed_dir = os.path.join(args.base_dir, 'processed')
 
     # Process text first (fast)
-    for split in args.splits:
+    if args.dataset_name == "AISHELL-3":
+      for split in args.splits:
         handle_txt(args.base_dir, args.processed_dir, split)
-
+ 
     # Load VAE and encode audio
     device = "cuda" if torch.cuda.is_available() else "cpu"
     vae = load_vae(args.vae_path, device=device,precision='fp16')
-    for split in args.splits:
-        handle_wav(args.base_dir, args.processed_dir, split, vae)
-
+    if args.dataset_name == "AISHELL-3":
+      for split in args.splits:
+          handle_wav(args.base_dir, args.processed_dir, split, vae)
+    elif args.dataset_name == "jvs":
+      handle_jvs_audio_and_text(args.base_dir, args.processed_dir, vae)
+    elif args.dataset_name == "LibriTTS":
+      handle_LibriTTS_audio_and_text(args.base_dir, args.processed_dir, vae)
     print("Done!")
 
 
