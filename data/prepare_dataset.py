@@ -146,6 +146,28 @@ def handle_LibriTTS_audio_and_text(base_dir, processed, vae):
     with open(os.path.join(processed, 'content.txt'), 'w', encoding='utf-8') as fout:
       fout.writelines(text_line)
 
+
+def handle_FGO_audio_and_text(base_dir, processed, vae):
+  import pandas as pd
+  if not os.path.exists(processed):
+    os.makedirs(processed)
+  text_line = []
+  df = pd.read_parquet(os.path.join(base_dir, 'table.parquet'))
+  for index, row in tqdm(df.iterrows(), total=len(df),desc="Processing FGO dataset"):
+    wav, sr = torchaudio.load(os.path.join(base_dir, row['filename']))
+    if sr != 48000:
+        wav = torchaudio.functional.resample(wav, orig_freq=sr, new_freq=48000)
+    wav = torch.clamp(wav, -1.0, 1.0).to(device=vae.device, dtype=vae.dtype).unsqueeze(1).repeat(1, 2, 1)
+    latent = vae_encode(vae, wav)
+    latent = latent.squeeze(0).cpu()  # (T, D)
+    save_file_stem = row['filename'].replace('_', '-')
+    torch.save(latent, os.path.join(processed, save_file_stem + '.pt'))
+    text = row['voice_text']
+    speaker = row['char_name']
+    text_line.append(f"{speaker}_{save_file_stem}.pt_{text}\n")
+  with open(os.path.join(processed, 'content.txt'), 'w', encoding='utf-8') as fout:
+    fout.writelines(text_line)
+
 def handle_txt(base_dir: str, processed_dir: str, split: str):
     """
     Parse content.txt and extract Chinese characters only.
@@ -201,6 +223,8 @@ def main():
       handle_jvs_audio_and_text(args.base_dir, args.processed_dir, vae)
     elif args.dataset_name == "LibriTTS":
       handle_LibriTTS_audio_and_text(args.base_dir, args.processed_dir, vae)
+    elif args.dataset_name == "FGO":
+      handle_FGO_audio_and_text(args.base_dir, args.processed_dir, vae)
     print("Done!")
 
 
