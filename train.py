@@ -292,9 +292,9 @@ def train(args):
                     with torch.no_grad():
                         inference(
                             dit, text_encoder, dur_pred, flow, cfg,
-                            prompt_audio_path="ref_audio.wav",
-                            prompt_text="八点十分",
-                            tts_text="春天有野草",
+                            prompt_audio_path="ref_audio.mp3",
+                            prompt_text="オルテナウス、疑似リンク解除！",
+                            tts_text="サポートシステム、40%カット……運動性、問題ありません！",
                             char_tokenizer=char_tokenizer,
                             vae_encode_fn=lambda wav: vae_encode(vae, wav),
                             vae_decode_fn=lambda lat: vae_decode(vae, lat),
