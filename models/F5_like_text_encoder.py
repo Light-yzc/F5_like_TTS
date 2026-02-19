@@ -83,6 +83,8 @@ class CharTokenizer:
     def __call__(self, texts, padding=True, truncation=True, max_length=512,
                  return_tensors="pt", **kwargs):
         """HuggingFace-compatible interface for collate_fn."""
+        if isinstance(texts, str):
+            texts = [texts]
         return self.batch_encode(texts, max_len=max_length if truncation else None,
                                  return_tensors=(return_tensors == "pt"))
 

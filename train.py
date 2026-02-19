@@ -15,7 +15,7 @@ import torch
 from tqdm import tqdm
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 
 from models.dit import DiT
 from models.F5_like_text_encoder import F5TextEncoder, CharTokenizer
@@ -84,15 +84,9 @@ def train(args):
     train_cfg = cfg["training"]
     audio_cfg = cfg["audio"]
     wandb.login()
-    # Use a stable run_id derived from config path so resume always continues the same run
-    import hashlib
-    _run_id = hashlib.md5(os.path.abspath(args.config).encode()).hexdigest()[:8]
-    wandb.init(
-        project="vae_dit_tts",
-        id=_run_id,
-        resume="allow",
-        config=cfg,
-    )
+    # Only resume wandb run when resuming training from checkpoint
+    wandb_kwargs = {"project": "vae_dit_tts_f5_text_enc", "config": cfg}
+    wandb.init(**wandb_kwargs)
     print(f"Device: {device}")
 
     # Load character vocabulary
@@ -169,7 +163,7 @@ def train(args):
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
     # AMP
-    scaler = GradScaler(enabled=train_cfg.get("fp16", True))
+    scaler = GradScaler('cuda', enabled=train_cfg.get("fp16", True))
 
     # Null condition for CFG training
     null_text_kv = torch.zeros(1, 1, cfg["model"]["dit_dim"], device=device)
@@ -218,7 +212,7 @@ def train(args):
                 print(f"[Step {global_step}] WARNING: NaN/Inf in latent, skipping batch")
                 continue
 
-            with autocast(enabled=train_cfg.get("fp16", True)):
+            with autocast('cuda', enabled=train_cfg.get("fp16", True)):
                 # Text encoding (F5-like, fully trainable)
                 text_kv, text_mask = text_encoder(input_ids, attention_mask)
 
@@ -299,6 +293,7 @@ def train(args):
                         prompt_audio_path="ref_audio.wav",
                         prompt_text="八点十分",
                         tts_text="春天有野草",
+                        char_tokenizer=char_tokenizer,
                         vae_encode_fn=lambda wav: vae_encode(vae, wav),
                         vae_decode_fn=lambda lat: vae_decode(vae, lat),
                         output_path=output_path,
