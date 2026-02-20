@@ -40,6 +40,10 @@ def build_vocab(data_root: str) -> dict[str, int]:
             char_counter.update(phonemes)
             num_lines += 1
 
+    # Ensure structural tokens used in dataset/inference are in vocab
+    # (The characters [, ], S, E, P will be safely accounted for)
+    char_counter.update("[SEP]")
+
     # Build vocab: PAD=0, UNK=1, then sorted by frequency (most frequent first)
     vocab = {"<PAD>": 0, "<UNK>": 1}
     for char, _count in char_counter.most_common():

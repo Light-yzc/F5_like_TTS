@@ -124,15 +124,20 @@ class TTSDataset(Dataset):
             target_latent = target_latent[split:]
             prompt_text = sample["text"]  # full text as approximation
 
-        # Combined text for T5: "prompt_text [SEP] target_text"
+        # Apply G2P and language tags individually to prompt and target
+        lang = sample["language"]
+        mapped_prompt = text_to_phonemes(prompt_text, lang)
         target_text = sample["text"]
-        full_text = f"{prompt_text} [SEP] {target_text}"
+        mapped_target = text_to_phonemes(target_text, lang)
+        
+        # Combined text for Text Encoder: "[LANG] prompt_phonemes [SEP] [LANG] target_phonemes"
+        full_text = f"{mapped_prompt} [SEP] {mapped_target}"
 
         return {
             "prompt_latent": prompt_latent,
             "target_latent": target_latent,
             "full_text": full_text,
-            "language": sample["language"],
+            "language": lang,
             "total_frames": prompt_latent.shape[0] + target_latent.shape[0],
             "target_frames": target_latent.shape[0],
         }
@@ -201,8 +206,7 @@ def collate_fn(batch: list[dict], tokenizer=None, max_text_len: int = 512) -> di
 
     # Tokenize text
     if tokenizer is not None:
-        # Apply G2P to texts based on their respective languages before tokenization
-        texts = [text_to_phonemes(item["full_text"], item["language"]) for item in batch]
+        texts = [item["full_text"] for item in batch]
         encoded = tokenizer(
             texts,
             padding=True,
@@ -213,6 +217,6 @@ def collate_fn(batch: list[dict], tokenizer=None, max_text_len: int = 512) -> di
         result["input_ids"] = encoded["input_ids"]
         result["attention_mask"] = encoded["attention_mask"]
     else:
-        result["texts"] = [text_to_phonemes(item["full_text"], item["language"]) for item in batch]
+        result["texts"] = [item["full_text"] for item in batch]
 
     return result

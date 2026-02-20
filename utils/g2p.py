@@ -92,18 +92,21 @@ def g2p_en(text: str) -> str:
 
 def text_to_phonemes(text: str, language: str) -> str:
     """
-    Route the text to the appropriate G2P engine based on language.
+    Route the text to the appropriate G2P engine based on language,
+    and prepend a language tag to explicitly condition the text encoder.
     """
     language = language.upper()
     if language == "ZH":
-        return g2p_zh(text)
+        phonemes = g2p_zh(text)
     elif language == "JA":
-        return g2p_ja(text)
+        phonemes = g2p_ja(text)
     elif language == "EN":
-        return g2p_en(text)
+        phonemes = g2p_en(text)
     else:
         # Fallback to English basically (raw characters)
-        return text
+        phonemes = text
+        
+    return f"[{language}] {phonemes}"
 
 if __name__ == "__main__":
     # Test cases
