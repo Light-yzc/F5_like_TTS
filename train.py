@@ -280,7 +280,7 @@ def train(args):
             #         "lr": f"{lr:.2e}"
             #     })
             # Periodic inference with on-demand VAE
-            if global_step % 500 == 0:
+            if global_step % 150 == 0:
                 try:
                     dit.eval()
                     text_encoder.eval()
@@ -295,6 +295,8 @@ def train(args):
                             prompt_audio_path="ref_audio.mp3",
                             prompt_text="オルテナウス、疑似リンク解除！",
                             tts_text="サポートシステム、40%カット……運動性、問題ありません！",
+                            prompt_language="JA",
+                            tts_language="JA",
                             char_tokenizer=char_tokenizer,
                             vae_encode_fn=lambda wav: vae_encode(vae, wav),
                             vae_decode_fn=lambda lat: vae_decode(vae, lat),
@@ -321,7 +323,7 @@ def train(args):
                     text_encoder.train()
 
             # Save checkpoint
-            if global_step % 2500 == 0:
+            if global_step % 500 == 0:
                 ckpt_dir = os.path.join(args.output_dir, f"step_{global_step}")
                 os.makedirs(ckpt_dir, exist_ok=True)
                 torch.save({

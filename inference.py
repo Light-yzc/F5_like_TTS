@@ -19,7 +19,7 @@ from models.dit import DiT
 from models.F5_like_text_encoder import F5TextEncoder, CharTokenizer
 from models.duration_predictor import DurationPredictor
 from models.flow_matching import FlowMatching
-
+from utils.g2p import text_to_phonemes
 
 def load_checkpoint(ckpt_path: str, device: torch.device, vocab_path_override: str = None):
     """Load checkpoint and reconstruct models."""
@@ -88,6 +88,8 @@ def inference(
     prompt_audio_path: str,
     prompt_text: str,
     tts_text: str,
+    prompt_language: str = "ZH",
+    tts_language: str = "ZH",
     char_tokenizer: CharTokenizer = None,
     vae_encode_fn=None,
     vae_decode_fn=None,
@@ -135,7 +137,10 @@ def inference(
             prompt_latent = torch.randn(1, 3 * latent_rate, cfg["model"]["latent_dim"], device=device)
 
         # --- 2. Encode text (character-level) ---
-        combined_text = f"{prompt_text} [SEP] {tts_text}"
+        mapped_prompt_text = text_to_phonemes(prompt_text, prompt_language)
+        mapped_tts_text = text_to_phonemes(tts_text, tts_language)
+        combined_text = f"{mapped_prompt_text} [SEP] {mapped_tts_text}"
+        
         if char_tokenizer is not None:
             tokens = char_tokenizer(combined_text, max_length=512)
         else:
@@ -195,7 +200,9 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint", type=str, required=True)
     parser.add_argument("--prompt_audio", type=str, required=True)
     parser.add_argument("--prompt_text", type=str, required=True)
+    parser.add_argument("--prompt_language", type=str, default="ZH", help="Language of the prompt text (ZH, JA, EN)")
     parser.add_argument("--tts_text", type=str, required=True)
+    parser.add_argument("--tts_language", type=str, default="ZH", help="Language of the TTS text (ZH, JA, EN)")
     parser.add_argument("--output", type=str, default="output.wav")
     parser.add_argument("--duration", type=float, default=None, help="Override duration in seconds")
     parser.add_argument("--cfg_scale", type=float, default=None)
@@ -214,6 +221,8 @@ if __name__ == "__main__":
         prompt_audio_path=args.prompt_audio,
         prompt_text=args.prompt_text,
         tts_text=args.tts_text,
+        prompt_language=args.prompt_language,
+        tts_language=args.tts_language,
         char_tokenizer=char_tokenizer,
         output_path=args.output,
         duration=args.duration,

@@ -19,6 +19,9 @@ from typing import Optional
 import tqdm
 from pathlib import Path
 
+# Import the new G2P module
+from utils.g2p import text_to_phonemes
+
 class TTSDataset(Dataset):
     """
     TTS dataset loading pre-computed VAE latents and text.
@@ -69,12 +72,15 @@ class TTSDataset(Dataset):
                 sample_idx = len(self.samples)
                 if not speaker.startswith("SSB"):
                     latent_name = utt_id
+                    language = "JA"
                 else:
                     latent_name = f"{speaker}_{utt_id.split('.')[0]}.pt"
+                    language = "ZH"
                 self.samples.append({
                     "latent_path": str(folder / 'wav' / latent_name),
                     "text": text,
                     "speaker": speaker,
+                    "language": language,
                 })
                 self.speaker_to_indices.setdefault(speaker, []).append(sample_idx)
 
@@ -126,6 +132,7 @@ class TTSDataset(Dataset):
             "prompt_latent": prompt_latent,
             "target_latent": target_latent,
             "full_text": full_text,
+            "language": sample["language"],
             "total_frames": prompt_latent.shape[0] + target_latent.shape[0],
             "target_frames": target_latent.shape[0],
         }
@@ -194,7 +201,8 @@ def collate_fn(batch: list[dict], tokenizer=None, max_text_len: int = 512) -> di
 
     # Tokenize text
     if tokenizer is not None:
-        texts = [item["full_text"] for item in batch]
+        # Apply G2P to texts based on their respective languages before tokenization
+        texts = [text_to_phonemes(item["full_text"], item["language"]) for item in batch]
         encoded = tokenizer(
             texts,
             padding=True,
@@ -205,6 +213,6 @@ def collate_fn(batch: list[dict], tokenizer=None, max_text_len: int = 512) -> di
         result["input_ids"] = encoded["input_ids"]
         result["attention_mask"] = encoded["attention_mask"]
     else:
-        result["texts"] = [item["full_text"] for item in batch]
+        result["texts"] = [text_to_phonemes(item["full_text"], item["language"]) for item in batch]
 
     return result

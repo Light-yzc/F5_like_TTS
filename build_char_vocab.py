@@ -12,6 +12,7 @@ import os
 import json
 import argparse
 from collections import Counter
+from utils.g2p import text_to_phonemes
 
 
 def build_vocab(data_root: str) -> dict[str, int]:
@@ -32,8 +33,11 @@ def build_vocab(data_root: str) -> dict[str, int]:
             parts = line.split("_", 2)
             if len(parts) < 3:
                 continue
+            speaker = parts[0]
             text = parts[2]
-            char_counter.update(text)
+            language = "ZH" if speaker.startswith("SSB") else "JA"
+            phonemes = text_to_phonemes(text, language)
+            char_counter.update(phonemes)
             num_lines += 1
 
     # Build vocab: PAD=0, UNK=1, then sorted by frequency (most frequent first)
