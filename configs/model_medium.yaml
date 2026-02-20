@@ -65,7 +65,7 @@ model:
   # F5-like Text Encoder (character-level + ConvNeXt)
   text_encoder_vocab_size: 256    
   text_conv_depth: 14               # 够深，能捕获一整个短句的韵律
-  text_conv_kernel: 12              # 感受野适中
+  text_conv_kernel: 13              # 感受野适中
   text_conv_ff_mult: 4             # 不需要太宽
 
   # Duration Predictor
