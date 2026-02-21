@@ -1,11 +1,10 @@
 import os
-import logging
+
 
 # 直接指向系统 espeak-ng 库
 os.environ["PHONEMIZER_ESPEAK_LIBRARY"] = "/usr/lib/x86_64-linux-gnu/libespeak-ng.so.1"
 
-# 消除 "words count mismatch" 烦人的警告
-logging.getLogger("phonemizer").setLevel(logging.ERROR)
+
 
 """
 IPA-based G2P for multilingual TTS.
@@ -55,6 +54,7 @@ def _get_backend(lang_code: str) -> "EspeakBackend":
             language=lang_code,
             preserve_punctuation=True,
             with_stress=False,
+            words_mismatch='ignore'  
         )
     return _BACKENDS[lang_code]
 

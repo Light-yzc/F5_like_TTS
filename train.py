@@ -64,9 +64,6 @@ def build_models(cfg: dict, device: torch.device, char_tokenizer: CharTokenizer 
         text_dim=dit_dim,
         hidden_dim=model_cfg["duration_hidden_dim"],
         num_layers=model_cfg["duration_num_layers"],
-        nhead=model_cfg.get("duration_nhead", 8),
-        num_conv_blocks=model_cfg.get("duration_conv_blocks", 3),
-        conv_kernel=model_cfg.get("duration_conv_kernel", 7),
         latent_rate=cfg["audio"]["latent_rate"],
     ).to(device)
 
@@ -88,7 +85,7 @@ def train(args):
     audio_cfg = cfg["audio"]
     wandb.login()
     # Only resume wandb run when resuming training from checkpoint
-    wandb_kwargs = {"project": "vae_dit_tts_f5_text_enc", "config": cfg}
+    wandb_kwargs = {"project": "vae_dit_tts_f5_text_enc_v3", "config": cfg}
     wandb.init(**wandb_kwargs)
     print(f"Device: {device}")
 
