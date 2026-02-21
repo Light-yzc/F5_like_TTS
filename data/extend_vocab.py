@@ -10,6 +10,7 @@ Usage:
 import os
 import json
 import argparse
+from utils.g2p import text_to_phonemes
 
 
 def extend_vocab(existing_path: str, new_data_root: str) -> dict[str, int]:
@@ -34,8 +35,12 @@ def extend_vocab(existing_path: str, new_data_root: str) -> dict[str, int]:
             parts = line.split("_", 2)
             if len(parts) < 3:
                 continue
+            speaker = parts[0]
+            language = "ZH" if speaker.startswith("SSB") else "JA"
             text = parts[2]
-            for ch in text:
+            phonemes = text_to_phonemes(text, language)
+
+            for ch in phonemes:
                 if ch not in vocab:
                     vocab[ch] = len(vocab)
                     new_chars.append(ch)
