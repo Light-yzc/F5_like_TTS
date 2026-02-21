@@ -1,12 +1,12 @@
-from data.dataset import TTSDataset
+from models.vae import *
+import torch
+import torchaudio
 
-dataset = TTSDataset(
-    data_root="/content/F5_like_TTS/processed_dir/train",
-    latent_rate=16,
-    min_duration_sec=1.0,
-    max_duration_sec=20.0,
-    prompt_ratio_min=0.05,
-    prompt_ratio_max=0.2,
-)
-import random
-print(dataset[70000])
+vae = load_vae(r"D:\CODE\F5_like_TTS\model_files\vae").to(torch.float16)
+
+with torch.no_grad():
+    latent = torch.load("D:\CODE\F5_like_TTS\jvs_proceed\jvs001-normal-jvs001BASIC5000-0025.pt")
+    print(latent.shape)
+    audio = vae_decode(vae, latent.unsqueeze(0).to(vae.device, vae.dtype))
+    wav = audio.squeeze(1).to(torch.float32).cpu()
+    torchaudio.save("./test.wav", wav, 48000)

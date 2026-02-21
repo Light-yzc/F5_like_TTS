@@ -82,12 +82,11 @@ def g2p_en(text: str) -> str:
     """
     # Use regex to find alphanumeric words or individual punctuation marks
     text = text.lower()
-    # \w+ captures letters/numbers. \S captures any non-whitespace (like punctuation).
-    # We want to separate words from punctuation. 
-    # Example: "apple's" -> ["apple", "'", "s"]
-    tokens = re.findall(r"[a-z0-9]+|[^\w\s]", text)
+    # Split into individual characters to match the CharTokenizer approach
+    # We still keep spaces to denote token barriers, but each letter is a token
+    tokens = list(text)
     
-    # Re-join with spaces to ensure tokenizer treats them as distinct sequence units
+    # Re-join with spaces to ensure tokenizer treats them as distinct units
     return " ".join(tokens).strip()
 
 def text_to_phonemes(text: str, language: str) -> str:

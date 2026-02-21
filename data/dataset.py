@@ -70,12 +70,19 @@ class TTSDataset(Dataset):
                     continue
                 speaker, utt_id, text = line.split('_', 2)  # maxsplit=2
                 sample_idx = len(self.samples)
-                if not speaker.startswith("SSB"):
+                latent_name = utt_id
+                if speaker.startswith("jvs"):
+                    latent_name = f"{utt_id.split('.')[0]}.pt"
+                    language = "JA"
+                elif speaker.startswith("SSB"):
+                    latent_name = f"{speaker}_{utt_id.split('.')[0]}.pt"
+                    language = "ZH"
+                elif utt_id.startswith("char"):
                     latent_name = utt_id
                     language = "JA"
                 else:
-                    latent_name = f"{speaker}_{utt_id.split('.')[0]}.pt"
-                    language = "ZH"
+                    latent_name = f"{utt_id.split('.')[0]}.pt"
+                    language = "EN"
                 self.samples.append({
                     "latent_path": str(folder / 'wav' / latent_name),
                     "text": text,

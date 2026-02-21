@@ -2,7 +2,7 @@
 Build character vocabulary from dataset content.txt and save as JSON.
 
 Usage:
-    python build_char_vocab.py --data_root data/processed/ --output data/char_vocab.json
+    python data/build_char_vocab.py --data_root data/processed/ --output data/char_vocab.json
 
 Reads content.txt (format: "speaker_uttId_text" per line),
 extracts all unique characters, and saves the vocabulary.

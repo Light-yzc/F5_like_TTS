@@ -96,7 +96,7 @@ def train(args):
         print(f"Loaded char vocab from {vocab_path} ({char_tokenizer.vocab_size} chars)")
     else:
         print(f"Vocab not found at {vocab_path}, building from dataset...")
-        from build_char_vocab import build_vocab
+        from data.build_char_vocab import build_vocab
         vocab = build_vocab(args.data_root)
         import json
         os.makedirs(os.path.dirname(vocab_path) or ".", exist_ok=True)
@@ -301,11 +301,11 @@ def train(args):
                     with torch.no_grad():
                         inference(
                             dit, text_encoder, dur_pred, flow, cfg,
-                            prompt_audio_path="ref_audio.mp3",
-                            prompt_text="オルテナウス、疑似リンク解除！",
-                            tts_text="サポートシステム、40%カット……運動性、問題ありません！",
-                            prompt_language="JA",
-                            tts_language="JA",
+                            prompt_audio_path="ref_audio.wav",
+                            prompt_text="他前天举办粉丝见面会",
+                            tts_text="春天有野草,夏天有",
+                            prompt_language="ZH",
+                            tts_language="ZH",
                             char_tokenizer=char_tokenizer,
                             vae_encode_fn=lambda wav: vae_encode(vae, wav),
                             vae_decode_fn=lambda lat: vae_decode(vae, lat),
