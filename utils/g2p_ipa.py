@@ -1,3 +1,21 @@
+import os
+import logging
+
+# Fix Colab /tmp noexec: point to system espeak-ng directly
+if not os.environ.get("PHONEMIZER_ESPEAK_LIBRARY"):
+    for lib_path in [
+        "/usr/lib/x86_64-linux-gnu/libespeak-ng.so.1",  # Ubuntu/Colab
+        "/usr/lib/libespeak-ng.so.1",                     # Other Linux
+        "/opt/homebrew/lib/libespeak-ng.dylib",            # macOS ARM
+        "/usr/local/lib/libespeak-ng.dylib",               # macOS Intel
+    ]:
+        if os.path.exists(lib_path):
+            os.environ["PHONEMIZER_ESPEAK_LIBRARY"] = lib_path
+            break
+
+# Suppress "words count mismatch" warning spam from phonemizer
+logging.getLogger("phonemizer").setLevel(logging.ERROR)
+
 """
 IPA-based G2P for multilingual TTS.
 
