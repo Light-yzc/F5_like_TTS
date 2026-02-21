@@ -19,7 +19,8 @@ from models.dit import DiT
 from models.F5_like_text_encoder import F5TextEncoder, CharTokenizer
 from models.duration_predictor import DurationPredictor
 from models.flow_matching import FlowMatching
-from utils.g2p import text_to_phonemes
+# from utils.g2p import text_to_phonemes
+from utils.g2p_ipa import text_to_phonemes_ipa as text_to_phonemes
 
 def load_checkpoint(ckpt_path: str, device: torch.device, vocab_path_override: str = None):
     """Load checkpoint and reconstruct models."""

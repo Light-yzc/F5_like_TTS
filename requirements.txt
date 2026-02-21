@@ -11,3 +11,4 @@ bitsandbytes
 pykakasi
 pypinyin
 rjieba
+phonemizer

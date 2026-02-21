@@ -121,13 +121,12 @@ class MultiHeadAttention(nn.Module):
         v = self.v_proj(kv_input).view(B, -1, self.heads, self.head_dim).transpose(1, 2)
 
         if self.is_cross:
-            # Cross-attn: Q gets audio-frame RoPE, K gets text-token RoPE (independent)
-            if rope_cos is not None:
-                q = apply_rotary_emb(q, rope_cos, rope_sin)
-            if kv_rope_cos is not None:
-                k = apply_rotary_emb(k, kv_rope_cos, kv_rope_sin)
+            # [CRITICAL FIX]: DO NOT apply RoPE to Cross-Attention Q & K!
+            # Audio (T) and Text (L) represent different sequence domains with variable duration ratios.
+            # Independent RoPE destroyed the alignment by enforcing a heavy penalty when m != n.
+            pass
         else:
-            # Self-attn: shared RoPE for Q and K
+            # Self-attn: shared RoPE for Q and K (temporal consistency within same domain)
             if rope_cos is not None:
                 q = apply_rotary_emb(q, rope_cos, rope_sin)
                 k = apply_rotary_emb(k, rope_cos, rope_sin)
@@ -143,6 +142,20 @@ class MultiHeadAttention(nn.Module):
         out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
         out = out.transpose(1, 2).contiguous().view(B, T, -1)
         return self.o_proj(out)
+
+class SinusoidalPositionalEmbedding(nn.Module):
+    """Absolute Positional Embeddings to replace Cross-Attention RoPE dependencies."""
+    def __init__(self, dim: int, max_seq_len: int = 8192):
+        super().__init__()
+        position = torch.arange(max_seq_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, dim, 2) * (-math.log(10000.0) / dim))
+        pe = torch.zeros(1, max_seq_len, dim)
+        pe[0, :, 0::2] = torch.sin(position * div_term)
+        pe[0, :, 1::2] = torch.cos(position * div_term)
+        self.register_buffer("pe", pe, persistent=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x + self.pe[:, :x.size(1)]
 
 
 # =============================================================================
@@ -285,6 +298,9 @@ class DiT(nn.Module):
 
         # Input projection: [x_t ∥ prompt_mask] → dit_dim
         self.proj_in = nn.Linear(latent_dim + 1, dit_dim)
+        
+        # Absolute Audio Positional Embedding (Crucial since Cross-Attention uses pure content now)
+        self.audio_pos_emb = SinusoidalPositionalEmbedding(dit_dim, max_seq_len)
 
         # Timestep embedding
         self.time_embed = TimestepEmbedding(256, dit_dim)
@@ -388,6 +404,7 @@ class DiT(nn.Module):
         else:
             mask_input = mask
         x = self.proj_in(torch.cat([x_t, mask_input], dim=-1))  # (B, T, dit_dim)
+        x = self.audio_pos_emb(x)  # ← 加这一行！
 
         # Timestep embedding
         time_emb = self.time_embed(timestep)  # (B, dit_dim)

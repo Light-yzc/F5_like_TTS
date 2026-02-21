@@ -12,7 +12,8 @@ import os
 import json
 import argparse
 from collections import Counter
-from utils.g2p import text_to_phonemes
+# from utils.g2p import text_to_phonemes
+from utils.g2p_ipa import text_to_phonemes_ipa as text_to_phonemes
 
 
 def build_vocab(data_root: str) -> dict[str, int]:
@@ -35,7 +36,14 @@ def build_vocab(data_root: str) -> dict[str, int]:
                 continue
             speaker = parts[0]
             text = parts[2]
-            language = "ZH" if speaker.startswith("SSB") else "JA"
+            if speaker.startswith("jvs"):
+                language = "JA"
+            elif speaker.startswith("SSB"):
+                language = "ZH"
+            elif parts[1].startswith("char"):
+                language = "JA"
+            else:
+                language = "EN"
             phonemes = text_to_phonemes(text, language)
             char_counter.update(phonemes)
             num_lines += 1
