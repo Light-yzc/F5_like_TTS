@@ -1,78 +1,69 @@
 import os
 import logging
 
-# Fix Colab /tmp noexec: point to system espeak-ng directly
-if not os.environ.get("PHONEMIZER_ESPEAK_LIBRARY"):
-    for lib_path in [
-        "/usr/lib/x86_64-linux-gnu/libespeak-ng.so.1",  # Ubuntu/Colab
-        "/usr/lib/libespeak-ng.so.1",                     # Other Linux
-        "/opt/homebrew/lib/libespeak-ng.dylib",            # macOS ARM
-        "/usr/local/lib/libespeak-ng.dylib",               # macOS Intel
-    ]:
-        if os.path.exists(lib_path):
-            os.environ["PHONEMIZER_ESPEAK_LIBRARY"] = lib_path
-            break
+# 直接指向系统 espeak-ng 库
+os.environ["PHONEMIZER_ESPEAK_LIBRARY"] = "/usr/lib/x86_64-linux-gnu/libespeak-ng.so.1"
 
-# Suppress "words count mismatch" warning spam from phonemizer
+# 消除 "words count mismatch" 烦人的警告
 logging.getLogger("phonemizer").setLevel(logging.ERROR)
 
 """
 IPA-based G2P for multilingual TTS.
 
-Uses `phonemizer` (espeak-ng backend) to convert ZH/JA/EN text to a unified
-International Phonetic Alphabet representation. This means shared sounds across
-languages map to the SAME tokens — e.g., /t/ in Chinese, Japanese, and English
-are identical, dramatically reducing the text encoder's learning burden.
-
-Dependencies:
-    pip install phonemizer
-    # Plus system-level: brew install espeak-ng  (macOS)
-    #                     apt install espeak-ng   (Ubuntu)
-
-Comparison with current approach (pinyin/romaji/lowercase):
-    Current:  ZH "今天" → "jin1 tian1"   (pinyin chars, tone numbers)
-              JA "今日" → "kyou"          (romaji chars)
-              EN "today" → "t o d a y"    (lowercase chars)
-              → Same letter 't' means different things in each language!
-
-    IPA:      ZH "今天" → "tɕintʰjɛn"    (IPA phonemes)
-              JA "今日" → "kʲoː"          (IPA phonemes)
-              EN "today" → "tʊdeɪ"        (IPA phonemes)
-              → Shared sounds like /t/ are identical tokens across languages!
+Uses a **persistent** EspeakBackend singleton per language to avoid the
+massive memory leak from re-creating backends on every call.
+Supports batch processing for vocab building.
 """
 
 import re
 from functools import lru_cache
 
 try:
-    from phonemizer import phonemize
     from phonemizer.separator import Separator
-    from phonemizer.backend import EspeakBackend
+    from phonemizer.backend.espeak.espeak import EspeakBackend
+
+    # 猴子补丁：阻止 phonemizer 复制 .so 到 /tmp（Colab /tmp 是 noexec）
+    from phonemizer.backend.espeak import api as espeak_api
+    espeak_api._copy_library = lambda lib: lib
+
     HAS_PHONEMIZER = True
 except ImportError:
     HAS_PHONEMIZER = False
 
 
 # ─── Language code mapping ───────────────────────────────────────────
-# phonemizer/espeak-ng uses its own language codes
 LANG_MAP = {
     "ZH": "cmn",       # Mandarin Chinese
     "JA": "ja",         # Japanese
     "EN": "en-us",      # American English
 }
 
-
-# ─── IPA Phoneme Separator ──────────────────────────────────────────
-# We use space between words, nothing between phones within a word.
-# This gives us a compact but parseable output.
+# Compact IPA separator: space between words, nothing between phones
 IPA_SEP = Separator(phone="", word=" ", syllable="")
+
+# ─── Persistent backend singletons ──────────────────────────────────
+# Key optimization: reuse backend instances instead of creating new ones.
+# Each EspeakBackend loads libespeak-ng.so and allocates memory.
+# Creating thousands of instances causes OOM.
+_BACKENDS: dict[str, "EspeakBackend"] = {}
+
+
+def _get_backend(lang_code: str) -> "EspeakBackend":
+    """Get or create a persistent EspeakBackend for the given language."""
+    if lang_code not in _BACKENDS:
+        _BACKENDS[lang_code] = EspeakBackend(
+            language=lang_code,
+            preserve_punctuation=True,
+            with_stress=False,
+        )
+    return _BACKENDS[lang_code]
 
 
 # ─── Core functions ─────────────────────────────────────────────────
 
 def g2p_ipa(text: str, language: str) -> str:
     """
-    Convert text to IPA using espeak-ng via phonemizer.
+    Convert text to IPA using a persistent espeak-ng backend.
 
     Args:
         text:     input text in any supported language
@@ -84,26 +75,42 @@ def g2p_ipa(text: str, language: str) -> str:
     if not HAS_PHONEMIZER:
         raise ImportError(
             "Please install phonemizer: pip install phonemizer\n"
-            "And espeak-ng: brew install espeak-ng (macOS) / "
-            "apt install espeak-ng (Linux)"
+            "And espeak-ng: apt install espeak-ng (Linux)"
         )
 
     lang_code = LANG_MAP.get(language.upper())
     if lang_code is None:
         raise ValueError(f"Unsupported language: {language}. Supported: {list(LANG_MAP.keys())}")
 
-    # phonemize expects a list of strings
-    result = phonemize(
-        [text],
-        language=lang_code,
-        backend="espeak",
-        separator=IPA_SEP,
-        strip=True,
-        preserve_punctuation=True,
-        with_stress=False,        # Remove stress marks for simplicity
-    )
-
+    backend = _get_backend(lang_code)
+    # Use the backend's phonemize method directly (no new backend creation!)
+    result = backend.phonemize([text], separator=IPA_SEP, strip=True)
     return result[0] if result else ""
+
+
+def g2p_ipa_batch(texts: list[str], language: str) -> list[str]:
+    """
+    Batch convert texts to IPA. Much more efficient than calling g2p_ipa()
+    in a loop because espeak-ng processes the entire batch in one subprocess call.
+
+    Args:
+        texts:    list of input texts
+        language: "ZH", "JA", or "EN"
+
+    Returns:
+        list of IPA strings
+    """
+    if not texts:
+        return []
+    if not HAS_PHONEMIZER:
+        raise ImportError("Please install phonemizer + espeak-ng")
+
+    lang_code = LANG_MAP.get(language.upper())
+    if lang_code is None:
+        raise ValueError(f"Unsupported language: {language}")
+
+    backend = _get_backend(lang_code)
+    return backend.phonemize(texts, separator=IPA_SEP, strip=True)
 
 
 def text_to_phonemes_ipa(text: str, language: str) -> str:
@@ -120,28 +127,7 @@ def text_to_phonemes_ipa(text: str, language: str) -> str:
     return f"[{language}] {ipa}"
 
 
-def build_ipa_vocab(texts_with_langs: list[tuple[str, str]]) -> dict[str, int]:
-    """
-    Build a character-level vocab from IPA outputs.
-    Since IPA uses a small set of unicode phoneme symbols (~100-150),
-    the resulting vocab is compact and shared across all languages.
-
-    Args:
-        texts_with_langs: list of (text, language) tuples
-
-    Returns:
-        vocab dict: {"<PAD>": 0, "<UNK>": 1, "t": 2, "ɕ": 3, ...}
-    """
-    vocab = {"<PAD>": 0, "<UNK>": 1}
-    for text, lang in texts_with_langs:
-        ipa = text_to_phonemes_ipa(text, lang)
-        for ch in ipa:
-            if ch not in vocab:
-                vocab[ch] = len(vocab)
-    return vocab
-
-
-# ─── Demo & Comparison ──────────────────────────────────────────────
+# ─── Demo ───────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     print("=" * 60)
@@ -166,16 +152,3 @@ if __name__ == "__main__":
     print(f"\n--- Vocab Stats ---")
     print(f"  Total unique IPA characters: {len(all_chars)}")
     print(f"  Characters: {''.join(sorted(all_chars))}")
-
-    # Compare with current approach
-    print("\n--- Comparison with current G2P ---")
-    try:
-        from utils.g2p import text_to_phonemes as old_g2p
-        for text, lang in test_cases[:3]:
-            old = old_g2p(text, lang)
-            new = text_to_phonemes_ipa(text, lang)
-            print(f"  {lang} OLD: {old}")
-            print(f"  {lang} NEW: {new}")
-            print()
-    except ImportError:
-        print("  (old g2p not available for comparison)")

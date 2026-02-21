@@ -64,6 +64,9 @@ def build_models(cfg: dict, device: torch.device, char_tokenizer: CharTokenizer 
         text_dim=dit_dim,
         hidden_dim=model_cfg["duration_hidden_dim"],
         num_layers=model_cfg["duration_num_layers"],
+        nhead=model_cfg.get("duration_nhead", 8),
+        num_conv_blocks=model_cfg.get("duration_conv_blocks", 3),
+        conv_kernel=model_cfg.get("duration_conv_kernel", 7),
         latent_rate=cfg["audio"]["latent_rate"],
     ).to(device)
 
@@ -239,7 +242,7 @@ def train(args):
                 dur_loss = dur_pred.loss(text_kv.detach(), attention_mask, target_frames)
 
                 # Total loss (dur_weight decays linearly: 0.1 → 0.01 over steps 2000~5000)
-                dur_decay_start, dur_decay_end = 1800, 3500
+                dur_decay_start, dur_decay_end = 12000, 35000
                 dur_weight_start, dur_weight_end = 0.1, 0.05
                 if global_step < dur_decay_start:
                     dur_weight = dur_weight_start
@@ -289,7 +292,7 @@ def train(args):
             #         "lr": f"{lr:.2e}"
             #     })
             # Periodic inference with on-demand VAE
-            if global_step % 350 == 0:
+            if global_step % 500 == 0:
                 try:
                     tts_texts = [
                         'ZH_春天有野草',
@@ -339,7 +342,7 @@ def train(args):
                     text_encoder.train()
 
             # Save checkpoint
-            if global_step % 1500 == 0:
+            if global_step % 2000 == 0:
                 ckpt_dir = os.path.join(args.output_dir, f"step_{global_step}")
                 os.makedirs(ckpt_dir, exist_ok=True)
                 torch.save({

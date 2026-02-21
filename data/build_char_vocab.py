@@ -11,26 +11,26 @@ extracts all unique characters, and saves the vocabulary.
 import os
 import json
 import argparse
-from collections import Counter
-# from utils.g2p import text_to_phonemes
-from utils.g2p_ipa import text_to_phonemes_ipa as text_to_phonemes
+from collections import Counter, defaultdict
+from utils.g2p_ipa import g2p_ipa_batch
+
+BATCH_SIZE = 500  # Process 500 texts per espeak-ng call
 
 
 def build_vocab(data_root: str) -> dict[str, int]:
-    """Build character vocab from content.txt."""
+    """Build character vocab from content.txt using batch G2P."""
     content_path = os.path.join(data_root, "content.txt")
     if not os.path.exists(content_path):
         raise FileNotFoundError(f"content.txt not found at {content_path}")
 
-    char_counter = Counter()
-    num_lines = 0
+    # ── Pass 1: Group texts by language ──
+    lang_texts: dict[str, list[str]] = defaultdict(list)
 
     with open(content_path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
-            # Format: speaker_uttId_text (split at first 2 underscores)
             parts = line.split("_", 2)
             if len(parts) < 3:
                 continue
@@ -44,12 +44,23 @@ def build_vocab(data_root: str) -> dict[str, int]:
                 language = "JA"
             else:
                 language = "EN"
-            phonemes = text_to_phonemes(text, language)
-            char_counter.update(phonemes)
-            num_lines += 1
+            lang_texts[language].append(text)
+
+    # ── Pass 2: Batch phonemize per language ──
+    char_counter = Counter()
+    num_lines = 0
+
+    for lang, texts in lang_texts.items():
+        print(f"  Phonemizing {len(texts)} {lang} texts in batches of {BATCH_SIZE}...")
+        for i in range(0, len(texts), BATCH_SIZE):
+            batch = texts[i : i + BATCH_SIZE]
+            ipa_results = g2p_ipa_batch(batch, lang)
+            for ipa in ipa_results:
+                tagged = f"[{lang}] {ipa}"
+                char_counter.update(tagged)
+            num_lines += len(batch)
 
     # Ensure structural tokens used in dataset/inference are in vocab
-    # (The characters [, ], S, E, P will be safely accounted for)
     char_counter.update("[SEP]")
 
     # Build vocab: PAD=0, UNK=1, then sorted by frequency (most frequent first)
@@ -58,7 +69,7 @@ def build_vocab(data_root: str) -> dict[str, int]:
         vocab[char] = len(vocab)
 
     print(f"Scanned {num_lines} lines")
-    print(f"Unique characters: {len(vocab) - 2}")  # exclude PAD, UNK
+    print(f"Unique characters: {len(vocab) - 2}")
     print(f"Total vocab size: {len(vocab)}")
     print(f"Top 20 chars: {[ch for ch, _ in char_counter.most_common(20)]}")
 
