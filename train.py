@@ -346,8 +346,21 @@ def train(args):
                     "config": cfg,
                     "vocab_path": vocab_path,
                 }, os.path.join(ckpt_dir, "checkpoint.pt"))
-                # Save checkpoint
                 print(f"Saved checkpoint at step {global_step}")
+
+                # Keep only the latest 2 checkpoints
+                if not hasattr(args, 'saved_ckpts'):
+                    args.saved_ckpts = []
+                args.saved_ckpts.append(ckpt_dir)
+                if len(args.saved_ckpts) > 1:
+                    old_ckpt_dir = args.saved_ckpts.pop(0)
+                    import shutil
+                    if os.path.exists(old_ckpt_dir):
+                        try:
+                            shutil.rmtree(old_ckpt_dir)
+                            print(f"Removed old checkpoint: {old_ckpt_dir}")
+                        except Exception as e:
+                            print(f"Failed to remove old checkpoint {old_ckpt_dir}: {e}")
     
     progress_bar.close()
     print("Training complete!")

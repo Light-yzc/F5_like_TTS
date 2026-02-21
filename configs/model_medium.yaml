@@ -86,7 +86,7 @@ audio:
   prompt_ratio_max: 0.5
 
 training:
-  batch_size: 64            # Reduce if VRAM limited (e.g., to 16 or 24)
+  batch_size: 13            # Reduce if VRAM limited (e.g., to 16 or 24)
   learning_rate: 1.5e-4     # Slightly lower LR for larger model
   weight_decay: 0.01
   warmup_steps: 5000
@@ -94,5 +94,5 @@ training:
   scheduler: cosine
   gradient_clip: 1.0
   fp16: true
-  gradient_checkpointing: true
+  gradient_checkpointing: false
   gradient_accumulation_steps: 1
