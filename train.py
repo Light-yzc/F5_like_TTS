@@ -291,35 +291,42 @@ def train(args):
             # Periodic inference with on-demand VAE
             if global_step % 150 == 0:
                 try:
+                    tts_texts = [
+                        'ZH_春天有野草',
+                        'JA_カルデア家、これより進軍します！'
+                        'EN_attention is all you need'
+                        ]
                     dit.eval()
                     text_encoder.eval()
                     # Load VAE → infer → unload
                     vae_cfg = cfg["vae"]
                     vae = load_vae(vae_cfg["model_path"], device=str(device), precision=vae_cfg.get("precision", "fp16"))
-                    output_path = f"outputs/infer_step_{global_step}.wav"
                     os.makedirs("outputs", exist_ok=True)
                     with torch.no_grad():
-                        inference(
-                            dit, text_encoder, dur_pred, flow, cfg,
-                            prompt_audio_path="ref_audio.wav",
-                            prompt_text="他前天举办粉丝见面会",
-                            tts_text="春天有野草,夏天有",
-                            prompt_language="ZH",
-                            tts_language="ZH",
-                            char_tokenizer=char_tokenizer,
-                            vae_encode_fn=lambda wav: vae_encode(vae, wav),
-                            vae_decode_fn=lambda lat: vae_decode(vae, lat),
-                            output_path=output_path,
-                        )
-                    # Log audio to wandb
-                    if os.path.exists(output_path):
-                        wandb.log({
-                            "infer/audio": wandb.Audio(
-                                output_path,
-                                sample_rate=audio_cfg["sample_rate"],
-                                caption=f"step_{global_step}",
-                            ),
-                        }, step=global_step)
+                        for text in tts_texts:
+                            language, text = text.split('_')
+                            output_path = f"outputs/infer_step_{global_step}_{language}.wav"
+                            inference(
+                                dit, text_encoder, dur_pred, flow, cfg,
+                                prompt_audio_path="ref_audio.wav",
+                                prompt_text="他前天举办粉丝见面会",
+                                tts_text=text,
+                                prompt_language="ZH",
+                                tts_language=language,
+                                char_tokenizer=char_tokenizer,
+                                vae_encode_fn=lambda wav: vae_encode(vae, wav),
+                                vae_decode_fn=lambda lat: vae_decode(vae, lat),
+                                output_path=output_path,
+                            )
+                            # Log audio to wandb
+                            if os.path.exists(output_path):
+                                wandb.log({
+                                    "infer/audio": wandb.Audio(
+                                        output_path,
+                                        sample_rate=audio_cfg["sample_rate"],
+                                        caption=f"step_{global_step}",
+                                    ),
+                                }, step=global_step)
                 except Exception as e:
                     print(f"[Step {global_step}] Inference failed: {e}")
                 finally:
