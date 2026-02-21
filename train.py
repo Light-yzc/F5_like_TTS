@@ -64,6 +64,9 @@ def build_models(cfg: dict, device: torch.device, char_tokenizer: CharTokenizer 
         text_dim=dit_dim,
         hidden_dim=model_cfg["duration_hidden_dim"],
         num_layers=model_cfg["duration_num_layers"],
+        nhead=model_cfg.get("duration_nhead", 8),
+        num_conv_blocks=model_cfg.get("duration_conv_blocks", 3),
+        conv_kernel=model_cfg.get("duration_conv_kernel", 7),
         latent_rate=cfg["audio"]["latent_rate"],
     ).to(device)
 
