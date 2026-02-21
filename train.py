@@ -289,11 +289,11 @@ def train(args):
             #         "lr": f"{lr:.2e}"
             #     })
             # Periodic inference with on-demand VAE
-            if global_step % 150 == 0:
+            if global_step % 350 == 0:
                 try:
                     tts_texts = [
                         'ZH_春天有野草',
-                        'JA_カルデア家、これより進軍します！'
+                        'JA_カルデア家、これより進軍します！',
                         'EN_attention is all you need'
                         ]
                     dit.eval()
@@ -304,7 +304,7 @@ def train(args):
                     os.makedirs("outputs", exist_ok=True)
                     with torch.no_grad():
                         for text in tts_texts:
-                            language, text = text.split('_')
+                            language, text = text.split('_', 1)
                             output_path = f"outputs/infer_step_{global_step}_{language}.wav"
                             inference(
                                 dit, text_encoder, dur_pred, flow, cfg,
@@ -321,10 +321,10 @@ def train(args):
                             # Log audio to wandb
                             if os.path.exists(output_path):
                                 wandb.log({
-                                    "infer/audio": wandb.Audio(
+                                    f"infer/audio_{language}": wandb.Audio(
                                         output_path,
                                         sample_rate=audio_cfg["sample_rate"],
-                                        caption=f"step_{global_step}",
+                                        caption=f"step_{global_step}_{language}",
                                     ),
                                 }, step=global_step)
                 except Exception as e:
@@ -339,7 +339,7 @@ def train(args):
                     text_encoder.train()
 
             # Save checkpoint
-            if global_step % 500 == 0:
+            if global_step % 1500 == 0:
                 ckpt_dir = os.path.join(args.output_dir, f"step_{global_step}")
                 os.makedirs(ckpt_dir, exist_ok=True)
                 torch.save({
