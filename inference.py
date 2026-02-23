@@ -81,6 +81,7 @@ def load_checkpoint(ckpt_path: str, device: torch.device, vocab_path_override: s
     flow = FlowMatching(
         default_cfg_scale=model_cfg["default_cfg_scale"],
         default_infer_steps=model_cfg["default_infer_steps"],
+        sway_coef=model_cfg.get("sway_coef", -1.0),
     )
 
     return dit, text_encoder, dur_pred, flow, cfg, char_tokenizer

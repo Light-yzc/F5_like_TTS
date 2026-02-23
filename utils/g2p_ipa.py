@@ -1,8 +1,12 @@
 import os
 
 
+import sys
 # 直接指向系统 espeak-ng 库
-os.environ["PHONEMIZER_ESPEAK_LIBRARY"] = "/usr/lib/x86_64-linux-gnu/libespeak-ng.so.1"
+if sys.platform == "darwin":
+    os.environ["PHONEMIZER_ESPEAK_LIBRARY"] = "/opt/homebrew/lib/libespeak-ng.1.dylib"
+else:
+    os.environ["PHONEMIZER_ESPEAK_LIBRARY"] = "/usr/lib/x86_64-linux-gnu/libespeak-ng.so.1"
 
 
 
@@ -28,6 +32,29 @@ try:
     HAS_PHONEMIZER = True
 except ImportError:
     HAS_PHONEMIZER = False
+
+try:
+    import pykakasi
+    HAS_PYKAKASI = True
+except ImportError:
+    HAS_PYKAKASI = False
+
+
+@lru_cache(maxsize=1)
+def _get_kakasi():
+    kks = pykakasi.kakasi()
+    return kks
+
+
+def _ja_kanji_to_kana(text: str) -> str:
+    """Convert Japanese kanji to katakana readings."""
+    if not HAS_PYKAKASI:
+        import warnings
+        warnings.warn("pykakasi not installed; Japanese kanji won't be converted")
+        return text
+    kks = _get_kakasi()
+    result = kks.convert(text)
+    return "".join([item['kana'] for item in result])
 
 
 # ─── Language code mapping ───────────────────────────────────────────
@@ -82,6 +109,9 @@ def g2p_ipa(text: str, language: str) -> str:
     if lang_code is None:
         raise ValueError(f"Unsupported language: {language}. Supported: {list(LANG_MAP.keys())}")
 
+    if lang_code == "ja":
+        text = _ja_kanji_to_kana(text)
+
     backend = _get_backend(lang_code)
     # Use the backend's phonemize method directly (no new backend creation!)
     result = backend.phonemize([text], separator=IPA_SEP, strip=True)
@@ -108,6 +138,9 @@ def g2p_ipa_batch(texts: list[str], language: str) -> list[str]:
     lang_code = LANG_MAP.get(language.upper())
     if lang_code is None:
         raise ValueError(f"Unsupported language: {language}")
+
+    if lang_code == "ja":
+        texts = [_ja_kanji_to_kana(t) for t in texts]
 
     backend = _get_backend(lang_code)
     return backend.phonemize(texts, separator=IPA_SEP, strip=True)
