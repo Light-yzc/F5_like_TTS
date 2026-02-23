@@ -124,6 +124,11 @@ class DurationPredictor(nn.Module):
         Returns:
             predicted_frames: (B,) — predicted number of latent frames (float)
         """
+        # print('///////////')
+        # print('text_features')
+        # print(text_features)
+        # print("text_mask")
+        # print(text_mask)
         # If no target mask is provided, fallback to the standard mask
         if target_text_mask is None:
             target_text_mask = text_mask
@@ -149,6 +154,8 @@ class DurationPredictor(nn.Module):
         # Use target_text_mask so it only pools target features
         pool_mask_bool = target_text_mask.bool()
 
+        # print("target_text_mask")
+        # print(target_text_mask)
         # 1. Attention pooling
         weights = self.pool_weight(x).squeeze(-1)  # (B, L)
         weights = weights.masked_fill(~pool_mask_bool, float("-inf"))
@@ -166,7 +173,7 @@ class DurationPredictor(nn.Module):
         x_for_max = x.masked_fill(~pool_mask_bool.unsqueeze(-1), float("-inf"))
         max_pool = x_for_max.max(dim=1).values  # (B, D)
         # Handle -inf if whole sequence is masked
-        max_pool = torch.nan_to_num(max_pool, 0.0)
+        max_pool = torch.where(max_pool == float("-inf"), torch.zeros_like(max_pool), max_pool)
 
         # Concatenate all pooling results
         pooled = torch.cat([attn_pool, mean_pool, max_pool], dim=-1)  # (B, 3*D)
