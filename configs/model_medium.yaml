@@ -14,63 +14,17 @@ model:
   ff_mult: 2.5              # FFN intermediate = dit_dim * ff_mult
 
   # F5-like Text Encoder (character-level + ConvNeXt)
-  text_encoder_vocab_size: 256    
-  text_conv_depth: 14               # 够深，能捕获一整个短句的韵律
-  text_conv_kernel: 14              # 感受野适中
-  text_conv_ff_mult: 4             # 不需要太宽
-
-  # Duration Predictor
-  duration_hidden_dim: 512
-  duration_num_layers: 2
-
-  # Flow Matching
-  cfg_dropout_rate: 0.15
-  default_cfg_scale: 3.0
-  default_infer_steps: 30
-
-audio:
-  sample_rate: 48000
-  latent_rate: 25
-  max_duration_sec: 30
-  min_duration_sec: 3
-  prompt_ratio_min: 0.2
-  prompt_ratio_max: 0.5
-
-training:
-  batch_size: 64            # Reduce if VRAM limited (e.g., to 16 or 24)
-  learning_rate: 1.5e-4     # Slightly lower LR for larger model
-  weight_decay: 0.01
-  warmup_steps: 5000
-  max_steps: 500000
-  scheduler: cosine
-  gradient_clip: 1.0
-  fp16: true
-  gradient_checkpointing: true
-  gradient_accumulation_steps: 1
-# VAE-DiT TTS — Medium Config (~400M DiT)
-
-vae:
-  model_path: "/content/F5_like_TTS/model_files/vae"    # local path or HuggingFace ID
-  precision: "fp16"
-model:
-  # DiT
-  # DiT (Large ~500M)
-  latent_dim: 64
-  dit_dim: 1024             # Increased from 1024
-  depth: 30                 # Increased from 22
-  heads: 16                 # Increased from 16 (1280 / 20 = 64 head_dim)
-  head_dim: 64
-  ff_mult: 2.5              # FFN intermediate = dit_dim * ff_mult
-
-  # F5-like Text Encoder (character-level + ConvNeXt)
-  text_encoder_vocab_size: 256    
+  text_encoder_vocab_size: 128    
   text_conv_depth: 14               # 够深，能捕获一整个短句的韵律
   text_conv_kernel: 13              # 感受野适中
   text_conv_ff_mult: 4             # 不需要太宽
 
-  # Duration Predictor
+  # Duration Predictor (ConvNeXt + Transformer + Multi-scale Pooling)
   duration_hidden_dim: 512
-  duration_num_layers: 2
+  duration_num_layers: 4
+  duration_nhead: 8
+  duration_conv_blocks: 3
+  duration_conv_kernel: 7
 
   # Flow Matching
   cfg_dropout_rate: 0.15
@@ -94,5 +48,5 @@ training:
   scheduler: cosine
   gradient_clip: 1.0
   fp16: true
-  gradient_checkpointing: false
+  gradient_checkpointing: true
   gradient_accumulation_steps: 1

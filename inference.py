@@ -19,7 +19,8 @@ from models.dit import DiT
 from models.F5_like_text_encoder import F5TextEncoder, CharTokenizer
 from models.duration_predictor import DurationPredictor
 from models.flow_matching import FlowMatching
-from utils.g2p import text_to_phonemes
+# from utils.g2p import text_to_phonemes
+from utils.g2p_ipa import text_to_phonemes_ipa as text_to_phonemes
 
 def load_checkpoint(ckpt_path: str, device: torch.device, vocab_path_override: str = None):
     """Load checkpoint and reconstruct models."""
@@ -69,6 +70,9 @@ def load_checkpoint(ckpt_path: str, device: torch.device, vocab_path_override: s
         text_dim=dit_dim,
         hidden_dim=model_cfg["duration_hidden_dim"],
         num_layers=model_cfg["duration_num_layers"],
+        nhead=model_cfg.get("duration_nhead", 8),
+        num_conv_blocks=model_cfg.get("duration_conv_blocks", 3),
+        conv_kernel=model_cfg.get("duration_conv_kernel", 7),
         latent_rate=cfg["audio"]["latent_rate"],
     ).to(device)
     dur_pred.load_state_dict(ckpt["dur_pred"], strict=False)

@@ -20,7 +20,9 @@ import tqdm
 from pathlib import Path
 
 # Import the new G2P module
-from utils.g2p import text_to_phonemes
+# from utils.g2p import text_to_phonemes
+from utils.g2p_ipa import text_to_phonemes_ipa as text_to_phonemes
+
 
 class TTSDataset(Dataset):
     """

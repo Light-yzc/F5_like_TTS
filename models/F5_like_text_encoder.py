@@ -10,6 +10,7 @@ Architecture:
 Reference: F5-TTS (https://arxiv.org/abs/2410.06885)
 """
 
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -140,6 +141,20 @@ class ConvNeXtBlock(nn.Module):
 # F5-like Text Encoder
 # =============================================================================
 
+class SinusoidalPositionalEmbedding(nn.Module):
+    """Absolute Positional Embeddings to replace Cross-Attention RoPE dependencies."""
+    def __init__(self, dim: int, max_seq_len: int = 8192):
+        super().__init__()
+        position = torch.arange(max_seq_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, dim, 2) * (-math.log(10000.0) / dim))
+        pe = torch.zeros(1, max_seq_len, dim)
+        pe[0, :, 0::2] = torch.sin(position * div_term)
+        pe[0, :, 1::2] = torch.cos(position * div_term)
+        self.register_buffer("pe", pe, persistent=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x + self.pe[:, :x.size(1)]
+
 class F5TextEncoder(nn.Module):
     """
     Character-level text encoder with ConvNeXt context modeling.
@@ -163,6 +178,7 @@ class F5TextEncoder(nn.Module):
         super().__init__()
         self.dim = dim
         self.embedding = nn.Embedding(vocab_size, dim, padding_idx=0)  # PAD=0
+        self.pos_emb = SinusoidalPositionalEmbedding(dim)
         self.blocks = nn.ModuleList([
             ConvNeXtBlock(dim, mult=ff_mult, kernel_size=kernel_size)
             for _ in range(depth)
@@ -184,7 +200,8 @@ class F5TextEncoder(nn.Module):
             attention_mask: (B, L) passed through unchanged
         """
         x = self.embedding(input_ids)  # (B, L, dim)
-
+        x = self.pos_emb(x)            # (B, L, dim) - Absolute position for cross-attention
+        
         # Mask padding positions to zero before conv
         if attention_mask is not None:
             x = x * attention_mask.unsqueeze(-1)
