@@ -113,15 +113,20 @@ class DurationPredictor(nn.Module):
         self,
         text_features: torch.Tensor,
         text_mask: torch.Tensor,
+        target_text_mask: torch.Tensor = None,
     ) -> torch.Tensor:
         """
         Args:
             text_features: (B, L, D) — text encoder output
             text_mask:     (B, L)    — 1=valid, 0=pad
+            target_text_mask: (B, L) - 1=target text, 0=prompt or pad (optional)
 
         Returns:
             predicted_frames: (B,) — predicted number of latent frames (float)
         """
+        # If no target mask is provided, fallback to the standard mask
+        if target_text_mask is None:
+            target_text_mask = text_mask
         # Project to hidden dim
         x = self.proj_in(text_features)  # (B, L, hidden_dim)
 
@@ -141,20 +146,27 @@ class DurationPredictor(nn.Module):
         x = self.encoder(x, src_key_padding_mask=pad_mask)
 
         # ── Multi-scale pooling ──
+        # Use target_text_mask so it only pools target features
+        pool_mask_bool = target_text_mask.bool()
+
         # 1. Attention pooling
         weights = self.pool_weight(x).squeeze(-1)  # (B, L)
-        weights = weights.masked_fill(~mask_bool, float("-inf"))
+        weights = weights.masked_fill(~pool_mask_bool, float("-inf"))
         weights = F.softmax(weights, dim=-1)  # (B, L)
+        # Handle case where entire sequence is padded out (nan prevention)
+        weights = torch.nan_to_num(weights, 0.0) 
         attn_pool = (x * weights.unsqueeze(-1)).sum(dim=1)  # (B, D)
 
         # 2. Mean pooling (masked)
-        x_masked = x * text_mask.unsqueeze(-1)
-        lengths = text_mask.sum(dim=1, keepdim=True).clamp(min=1)
+        x_masked = x * target_text_mask.unsqueeze(-1)
+        lengths = target_text_mask.sum(dim=1, keepdim=True).clamp(min=1)
         mean_pool = x_masked.sum(dim=1) / lengths  # (B, D)
 
         # 3. Max pooling (masked)
-        x_for_max = x.masked_fill(~mask_bool.unsqueeze(-1), float("-inf"))
+        x_for_max = x.masked_fill(~pool_mask_bool.unsqueeze(-1), float("-inf"))
         max_pool = x_for_max.max(dim=1).values  # (B, D)
+        # Handle -inf if whole sequence is masked
+        max_pool = torch.nan_to_num(max_pool, 0.0)
 
         # Concatenate all pooling results
         pooled = torch.cat([attn_pool, mean_pool, max_pool], dim=-1)  # (B, 3*D)
@@ -167,9 +179,10 @@ class DurationPredictor(nn.Module):
         self,
         text_features: torch.Tensor,
         text_mask: torch.Tensor,
+        target_text_mask: torch.Tensor = None,
     ) -> torch.Tensor:
         """Predict duration in seconds."""
-        frames = self.forward(text_features, text_mask)
+        frames = self.forward(text_features, text_mask, target_text_mask)
         return frames / self.latent_rate
 
     def loss(
@@ -177,7 +190,8 @@ class DurationPredictor(nn.Module):
         text_features: torch.Tensor,
         text_mask: torch.Tensor,
         target_frames: torch.Tensor,
+        target_text_mask: torch.Tensor = None,
     ) -> torch.Tensor:
         """MSE loss between predicted and GT frame count."""
-        pred = self.forward(text_features, text_mask)
+        pred = self.forward(text_features, text_mask, target_text_mask)
         return F.mse_loss(pred, target_frames.float())

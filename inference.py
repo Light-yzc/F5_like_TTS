@@ -148,11 +148,27 @@ def inference(
         
         if char_tokenizer is not None:
             tokens = char_tokenizer(combined_text, max_length=512)
+            sep_id = char_tokenizer.vocab.get("[SEP]", -1)
         else:
             # Fallback: inline char tokenization
-            tokens = CharTokenizer().batch_encode([combined_text], max_len=512)
+            fallback_tokenizer = CharTokenizer()
+            tokens = fallback_tokenizer.batch_encode([combined_text], max_len=512)
+            sep_id = fallback_tokenizer.vocab.get("[SEP]", -1)
+            
         input_ids = tokens["input_ids"].to(device)
         attention_mask = tokens["attention_mask"].to(device)
+        
+        # Calculate target_text_mask for inference
+        target_text_mask = torch.zeros_like(attention_mask)
+        if sep_id != -1:
+            sep_indices = (input_ids[0] == sep_id).nonzero(as_tuple=True)[0]
+            if len(sep_indices) > 0:
+                sep_idx = sep_indices[0].item()
+                target_text_mask[0, sep_idx + 1:] = attention_mask[0, sep_idx + 1:]
+            else:
+                target_text_mask = attention_mask
+        else:
+            target_text_mask = attention_mask
 
         text_kv, text_mask = text_encoder(input_ids, attention_mask)
 
@@ -165,7 +181,7 @@ def inference(
             T_gen = int(duration * latent_rate)
         else:
             # Use duration predictor
-            T_gen = int(dur_pred(text_kv, attention_mask).item())
+            T_gen = int(dur_pred(text_kv, attention_mask, target_text_mask).item())
             T_gen = max(latent_rate, T_gen)  # At least 1 second
             print(f"Predicted duration: {T_gen / latent_rate:.2f}s ({T_gen} frames)")
 

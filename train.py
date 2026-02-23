@@ -217,6 +217,7 @@ def train(args):
             padding_mask = batch["padding_mask"].to(device)
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
+            target_text_mask = batch.get("target_text_mask", attention_mask).to(device)
             target_frames = batch["target_frames"].to(device)
 
             # Check for NaN/Inf in input data
@@ -239,7 +240,7 @@ def train(args):
                 )
 
                 # Duration predictor loss (detach text features)
-                dur_loss = dur_pred.loss(text_kv.detach(), attention_mask, target_frames)
+                dur_loss = dur_pred.loss(text_kv.detach(), attention_mask, target_frames, target_text_mask)
 
                 # Total loss (dur_weight decays linearly: 0.1 → 0.01 over steps 2000~5000)
                 dur_decay_start, dur_decay_end = 12000, 35000
