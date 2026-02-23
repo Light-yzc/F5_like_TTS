@@ -146,6 +146,8 @@ class TTSDataset(Dataset):
             "prompt_latent": prompt_latent,
             "target_latent": target_latent,
             "full_text": full_text,
+            "prompt_text_mapped": mapped_prompt,
+            "target_text_mapped": mapped_target,
             "language": lang,
             "total_frames": prompt_latent.shape[0] + target_latent.shape[0],
             "target_frames": target_latent.shape[0],
@@ -228,18 +230,11 @@ def collate_fn(batch: list[dict], tokenizer=None, max_text_len: int = 512) -> di
 
         # Calculate target_text_mask for duration predictor
         target_text_masks = torch.zeros_like(encoded["attention_mask"])
-        sep_id = tokenizer.vocab.get("[SEP]", -1)
-        if sep_id != -1:
-            for i, input_id_row in enumerate(encoded["input_ids"]):
-                # Find index of [SEP]
-                sep_indices = (input_id_row == sep_id).nonzero(as_tuple=True)[0]
-                if len(sep_indices) > 0:
-                    sep_idx = sep_indices[0].item()
-                    # target text is everything after [SEP], up to the padded attention mask length
-                    target_text_masks[i, sep_idx + 1:] = encoded["attention_mask"][i, sep_idx + 1:]
-                else:
-                    # Fallback if no [SEP] found (shouldn't happen with our dataset)
-                    target_text_masks[i] = encoded["attention_mask"][i]
+        for i, item in enumerate(batch):
+            # full_text is mapped_prompt + " [SEP] " + mapped_target
+            # Since CharTokenizer maps 1 char -> 1 token, target starts exactly at this index:
+            start_idx = len(item["prompt_text_mapped"]) + 7
+            target_text_masks[i, start_idx:] = encoded["attention_mask"][i, start_idx:]
                     
         result["target_text_mask"] = target_text_masks
     else:
