@@ -312,10 +312,10 @@ def train(args):
                             output_path = f"outputs/infer_step_{global_step}_{language}.wav"
                             inference(
                                 dit, text_encoder, dur_pred, flow, cfg,
-                                prompt_audio_path="ref_audio.wav",
-                                prompt_text="他前天举办粉丝见面会",
+                                prompt_audio_path="ref_audio.mp3",
+                                prompt_text="カルデア式ですね。わかります。",
                                 tts_text=text,
-                                prompt_language="ZH",
+                                prompt_language="JA",
                                 tts_language=language,
                                 char_tokenizer=char_tokenizer,
                                 vae_encode_fn=lambda wav: vae_encode(vae, wav),
