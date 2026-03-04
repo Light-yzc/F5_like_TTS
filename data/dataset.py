@@ -237,6 +237,19 @@ def collate_fn(batch: list[dict], tokenizer=None, max_text_len: int = 512) -> di
             target_text_masks[i, start_idx:] = encoded["attention_mask"][i, start_idx:]
                     
         result["target_text_mask"] = target_text_masks
+
+        # Encode CTC targets: target_text_mapped → char_vocab token IDs
+        ctc_targets_list = []
+        ctc_target_lengths = []
+        for item in batch:
+            target_text = item["target_text_mapped"]
+            ids = tokenizer.encode(target_text)  # list[int]
+            ctc_targets_list.append(torch.tensor(ids, dtype=torch.long))
+            ctc_target_lengths.append(len(ids))
+
+        # Flatten for CTC (1D target tensor, as required by torch.nn.CTCLoss)
+        result["ctc_targets"] = torch.cat(ctc_targets_list)
+        result["ctc_target_lengths"] = torch.tensor(ctc_target_lengths, dtype=torch.long)
     else:
         result["texts"] = [item["full_text"] for item in batch]
 

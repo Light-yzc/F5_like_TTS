@@ -221,6 +221,92 @@ def test_end_to_end_pipeline():
     print(f"✓ End-to-end pipeline (prompt={75}f + gen={T_gen}f = {75 + T_gen}f)")
 
 
+def test_ctc_head_forward():
+    from models.ctc_head import CTCAlignmentHead
+    ctc = CTCAlignmentHead(dit_dim=128, vocab_size=94)
+    hidden = torch.randn(2, 50, 128)
+    log_probs = ctc(hidden)
+    assert log_probs.shape == (50, 2, 95), f"CTC log_probs shape mismatch: {log_probs.shape}"
+    # Verify log_softmax outputs (should sum to ~1 in probability space)
+    probs = log_probs.exp()
+    prob_sums = probs.sum(dim=-1)
+    assert torch.allclose(prob_sums, torch.ones_like(prob_sums), atol=1e-5), "CTC probs don't sum to 1"
+    print("✓ CTCAlignmentHead forward")
+
+
+def test_ctc_head_loss():
+    from models.ctc_head import CTCAlignmentHead
+    ctc = CTCAlignmentHead(dit_dim=128, vocab_size=94)
+
+    B, T = 2, 50
+    hidden = torch.randn(B, T, 128, requires_grad=True)
+    target_mask = torch.zeros(B, T)
+    target_mask[:, 20:] = 1.0  # 30 target frames
+
+    # CTC targets: 2 samples, 10 chars each
+    ctc_targets = torch.randint(1, 94, (20,))  # avoid PAD=0
+    ctc_target_lengths = torch.tensor([10, 10])
+
+    loss = ctc.loss(hidden, target_mask, ctc_targets, ctc_target_lengths)
+    assert loss.shape == (), f"CTC loss should be scalar, got {loss.shape}"
+    assert not torch.isnan(loss), "CTC loss is NaN"
+    loss.backward()
+    assert hidden.grad is not None, "No gradient on hidden states"
+    print(f"✓ CTCAlignmentHead loss (loss={loss.item():.4f})")
+
+
+def test_dit_return_hidden():
+    dit = DiT(latent_dim=16, dit_dim=128, depth=2, heads=2, head_dim=64, ff_mult=2.0)
+    B, T_total, L_text = 2, 30, 10
+
+    x_t = torch.randn(B, T_total, 16)
+    mask = torch.cat([torch.ones(B, 10), torch.zeros(B, 20)], dim=1)
+    t = torch.rand(B)
+    text_kv = torch.randn(B, L_text, 128)
+    text_mask = torch.ones(B, L_text)
+    padding_mask = torch.ones(B, T_total)
+
+    # Without return_hidden
+    out = dit(x_t, mask, t, text_kv, text_mask, padding_mask=padding_mask)
+    assert isinstance(out, torch.Tensor), "Without return_hidden should return tensor"
+
+    # With return_hidden
+    velocity, hidden = dit(x_t, mask, t, text_kv, text_mask, padding_mask=padding_mask, return_hidden=True)
+    assert velocity.shape == (B, T_total, 16), f"velocity shape: {velocity.shape}"
+    assert hidden.shape == (B, T_total, 128), f"hidden shape: {hidden.shape}"
+    print("✓ DiT return_hidden")
+
+
+def test_flow_matching_with_ctc():
+    dit = DiT(latent_dim=16, dit_dim=128, depth=2, heads=2, head_dim=64, ff_mult=2.0)
+    flow = FlowMatching(cfg_dropout_rate=0.5)
+
+    B, T_prompt, T_target = 2, 10, 20
+    T_total = T_prompt + T_target
+
+    latent = torch.randn(B, T_total, 16)
+    prompt_mask = torch.zeros(B, T_total)
+    target_mask = torch.zeros(B, T_total)
+    padding_mask = torch.ones(B, T_total)
+    prompt_mask[:, :T_prompt] = 1.0
+    target_mask[:, T_prompt:] = 1.0
+
+    text_kv = torch.randn(B, 8, 128)
+    text_mask = torch.ones(B, 8)
+    null_kv = torch.zeros(B, 1, 128)
+
+    losses = flow.compute_loss(
+        dit, latent, prompt_mask, target_mask,
+        text_kv, text_mask, null_kv,
+        padding_mask=padding_mask,
+        return_hidden=True,
+    )
+    assert "hidden_states" in losses, "Missing hidden_states in return"
+    assert losses["hidden_states"].shape == (B, T_total, 128), \
+        f"hidden_states shape: {losses['hidden_states'].shape}"
+    print("✓ FlowMatching.compute_loss with return_hidden")
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("VAE-DiT TTS — Shape Verification Tests")
@@ -236,6 +322,14 @@ if __name__ == "__main__":
     test_flow_matching_loss()
     test_flow_matching_sample()
     test_end_to_end_pipeline()
+
+    print("-" * 60)
+    print("CTC Alignment Tests")
+    print("-" * 60)
+    test_ctc_head_forward()
+    test_ctc_head_loss()
+    test_dit_return_hidden()
+    test_flow_matching_with_ctc()
 
     print("=" * 60)
     print("All tests passed! ✓")

@@ -339,13 +339,6 @@ class DiT(nn.Module):
         self.gradient_checkpointing = False  # set via enable_gradient_checkpointing()
         self.use_text_expand = use_text_expand
 
-        # Diagonal attention bias: per-layer learnable gamma controls constraint strength
-        # Each layer gets its own gamma, allowing shallow layers to be tight and deep layers to relax
-        # All initialized to 5.0 — a moderate constraint that adapts during training
-        self.diagonal_gammas = nn.ParameterList([
-            nn.Parameter(torch.tensor(5.0)) for _ in range(depth)
-        ])
-
         # Input projection: [x_t ∥ prompt_mask] → dit_dim
         self.proj_in = nn.Linear(latent_dim + 1, dit_dim)
         
@@ -431,15 +424,17 @@ class DiT(nn.Module):
         text_kv: torch.Tensor,
         text_mask: Optional[torch.Tensor] = None,
         padding_mask: Optional[torch.Tensor] = None,
+        return_hidden: bool = False,
     ) -> torch.Tensor:
         """
         Args:
-            x_t:          (B, T, latent_dim) noisy latent sequence
-            mask:         (B, T)             1=prompt, 0=target/pad (input channel)
-            timestep:     (B,)               diffusion timestep
-            text_kv:      (B, L, dit_dim)    text conditioning
-            text_mask:    (B, L)             text attention mask
-            padding_mask: (B, T)             1=valid, 0=pad (for self-attention)
+            x_t:           (B, T, latent_dim) noisy latent sequence
+            mask:          (B, T)             1=prompt, 0=target/pad (input channel)
+            timestep:      (B,)               diffusion timestep
+            text_kv:       (B, L, dit_dim)    text conditioning
+            text_mask:     (B, L)             text attention mask
+            padding_mask:  (B, T)             1=valid, 0=pad (for self-attention)
+            return_hidden: bool               if True, also return last block hidden states
         """
         B, T, D = x_t.shape
 
@@ -466,13 +461,8 @@ class DiT(nn.Module):
 
         # Transformer blocks
         for i, block in enumerate(self.blocks):
-            # Each layer computes its own diagonal bias with its own gamma
-            diag_bias = compute_diagonal_bias(
-                T, L_text,
-                gamma=self.diagonal_gammas[i].abs(),
-                device=x.device,
-                dtype=x.dtype,
-            )
+            # Diagonal bias disabled — CTC alignment loss handles alignment instead
+            diag_bias = None
             if self.gradient_checkpointing and self.training:
                 x = checkpoint(
                     block, x, time_emb, text_kv, text_mask,
@@ -489,11 +479,16 @@ class DiT(nn.Module):
                     diag_bias,
                 )
 
+        # Save hidden states before final projection (for CTC alignment loss)
+        hidden = x if return_hidden else None
+
         # Output projection with AdaLN
         shift, scale = (self.out_scale_shift + time_emb.unsqueeze(1)).chunk(2, dim=1)
         x = self.norm_out(x) * (1 + scale) + shift
         velocity = self.proj_out(x)  # (B, T, latent_dim)
 
+        if return_hidden:
+            return velocity, hidden
         return velocity
 
     @property

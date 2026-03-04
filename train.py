@@ -21,6 +21,7 @@ from models.dit import DiT
 from models.F5_like_text_encoder import F5TextEncoder, CharTokenizer
 from models.duration_predictor import DurationPredictor
 from models.flow_matching import FlowMatching
+from models.ctc_head import CTCAlignmentHead
 from data.dataset import TTSDataset, collate_fn
 from inference import inference
 from models.vae import load_vae, vae_encode, vae_decode
@@ -114,6 +115,13 @@ def train(args):
         dit.enable_gradient_checkpointing()
         print("Gradient checkpointing enabled")
     print(f"DiT parameters: {dit.num_params / 1e6:.1f}M (trainable: {dit.num_trainable_params / 1e6:.1f}M)")
+
+    # CTC Alignment Head
+    ctc_head = CTCAlignmentHead(
+        dit_dim=cfg["model"]["dit_dim"],
+        vocab_size=char_tokenizer.vocab_size,
+    ).to(device)
+    print(f"CTC Head parameters: {sum(p.numel() for p in ctc_head.parameters()) / 1e3:.1f}K")
     print(f"TextEncoder parameters: {text_encoder.num_params / 1e6:.1f}M")
 
     # Dataset
@@ -137,11 +145,12 @@ def train(args):
     )
     print(f"Dataset: {len(dataset)} samples")
 
-    # Optimizer (all trainable: DiT + TextEncoder + DurationPredictor)
+    # Optimizer (all trainable: DiT + TextEncoder + DurationPredictor + CTC Head)
     trainable_params = (
         list(dit.parameters())
         + list(text_encoder.parameters())
         + list(dur_pred.parameters())
+        + list(ctc_head.parameters())
     )
     # optimizer = torch.optim.AdamW(
     #     trainable_params,
@@ -177,10 +186,16 @@ def train(args):
         print(f"Resuming from checkpoint: {args.resume}")
         ckpt = torch.load(args.resume, map_location=device, weights_only=False)
         dit.load_state_dict(ckpt["dit"], strict=False)
+        if "ctc_head" in ckpt:
+            ctc_head.load_state_dict(ckpt["ctc_head"])
         if "text_encoder" in ckpt:
             text_encoder.load_state_dict(ckpt["text_encoder"])
         dur_pred.load_state_dict(ckpt["dur_pred"], strict=False)
-        optimizer.load_state_dict(ckpt["optimizer"])
+        try:
+            optimizer.load_state_dict(ckpt["optimizer"])
+        except (ValueError, RuntimeError) as e:
+            print(f"WARNING: Could not load optimizer state (likely due to new parameters): {e}")
+            print("Continuing with fresh optimizer state for new parameters.")
         if "scaler" in ckpt:
             scaler.load_state_dict(ckpt["scaler"])
         global_step = ckpt["global_step"]
@@ -202,6 +217,7 @@ def train(args):
     dit.train()
     text_encoder.train()
     dur_pred.train()
+    ctc_head.train()
 
     print("Starting training...")
     progress_bar = tqdm(total=max_steps, initial=global_step, desc="Training")
@@ -232,17 +248,28 @@ def train(args):
                 # Expand null condition to batch size
                 null_kv = null_text_kv.expand(latent.shape[0], -1, -1)
 
-                # Flow matching loss
+                # Flow matching loss (with hidden states for CTC)
                 fm_losses = flow.compute_loss(
                     dit, latent, prompt_mask, target_mask,
                     text_kv, text_mask, null_kv,
                     padding_mask=padding_mask,
+                    return_hidden=True,
                 )
 
                 # Duration predictor loss (detach text features)
                 dur_loss = dur_pred.loss(text_kv.detach(), attention_mask, target_frames, target_text_mask)
 
-                # Total loss (dur_weight decays linearly: 0.1 → 0.01 over steps 2000~5000)
+                # CTC alignment loss
+                ctc_targets = batch["ctc_targets"].to(device)
+                ctc_target_lengths = batch["ctc_target_lengths"].to(device)
+                ctc_loss = ctc_head.loss(
+                    fm_losses["hidden_states"],
+                    target_mask,
+                    ctc_targets,
+                    ctc_target_lengths,
+                )
+
+                # Total loss (dur_weight decays linearly: 0.1 → 0.05 over steps 24k~65k)
                 dur_decay_start, dur_decay_end = 24000, 65000
                 dur_weight_start, dur_weight_end = 0.1, 0.05
                 if global_step < dur_decay_start:
@@ -253,7 +280,18 @@ def train(args):
                     progress = (global_step - dur_decay_start) / (dur_decay_end - dur_decay_start)
                     dur_weight = dur_weight_start + (dur_weight_end - dur_weight_start) * progress
 
-                loss = fm_losses["loss"] + dur_weight * dur_loss
+                # CTC weight decays linearly: 0.1 → 0.01 over steps 10k~50k
+                ctc_decay_start, ctc_decay_end = 10000, 50000
+                ctc_weight_start, ctc_weight_end = 0.1, 0.01
+                if global_step < ctc_decay_start:
+                    ctc_weight = ctc_weight_start
+                elif global_step > ctc_decay_end:
+                    ctc_weight = ctc_weight_end
+                else:
+                    progress = (global_step - ctc_decay_start) / (ctc_decay_end - ctc_decay_start)
+                    ctc_weight = ctc_weight_start + (ctc_weight_end - ctc_weight_start) * progress
+
+                loss = fm_losses["loss"] + dur_weight * dur_loss + ctc_weight * ctc_loss
 
                 # NaN check on loss
                 if torch.isnan(loss) or torch.isinf(loss):
@@ -268,6 +306,8 @@ def train(args):
                     "train/fm_loss": fm_losses["loss"].item(),
                     "train/dur_loss": dur_loss.item(),
                     "train/dur_weight": dur_weight,
+                    "train/ctc_loss": ctc_loss.item(),
+                    "train/ctc_weight": ctc_weight,
                     "train/lr": scheduler.get_last_lr()[0],
                 }, step=global_step)
 
@@ -350,6 +390,7 @@ def train(args):
                     "dit": dit.state_dict(),
                     "text_encoder": text_encoder.state_dict(),
                     "dur_pred": dur_pred.state_dict(),
+                    "ctc_head": ctc_head.state_dict(),
                     "optimizer": optimizer.state_dict(),
                     "scheduler": scheduler.state_dict(),
                     "scaler": scaler.state_dict(),
