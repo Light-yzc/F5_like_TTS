@@ -296,9 +296,9 @@ def train(args):
             if global_step % 500 == 0:
                 try:
                     tts_texts = [
-                        'ZH_“等等，志贵，这话是什么意思啊？”……这个笨蛋，不直接的说出来的话，她是不会明白的，可恶。',
-                        'JA_戦闘終了。何とかなりましたね。',
-                        'EN_I like your simpler and more natural style of testing and videos in general. And the best part is that there is no music in the background, really appreciate that.'
+                        'ZH_《月姬》是由日本的同人社团TYPE-MOON制作的游戏，完整版于2000年的冬季ComicMarket（C59）发表。由于其独特的世界观与曲折的剧情而引人瞩目，也成为TYPE-MOON的成名之作。',
+                        'JA_ありがとうございます！なんだか、すごく嬉しいです、先輩！わたし、今日この時の気持ちをずっと忘れません。',
+                        'EN_We propose a new simple network architecture, the Transformer, based solely on attention mechanisms, dispensing with recurrence and convolutions entirely.'
                         ]
                     dit.eval()
                     text_encoder.eval()
