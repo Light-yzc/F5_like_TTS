@@ -296,7 +296,7 @@ def train(args):
             if global_step % 500 == 0:
                 try:
                     tts_texts = [
-                        'ZH_《月姬》是由日本的同人社团TYPE-MOON制作的游戏，完整版于2000年的冬季ComicMarket（C59）发表。由于其独特的世界观与曲折的剧情而引人瞩目，也成为TYPE-MOON的成名之作。',
+                        'ZH_杀死我的责任，你打算怎么负责呢？”纯白的吸血姬这么说着。',
                         'JA_ありがとうございます！なんだか、すごく嬉しいです、先輩！わたし、今日この時の気持ちをずっと忘れません。',
                         'EN_We propose a new simple network architecture, the Transformer, based solely on attention mechanisms, dispensing with recurrence and convolutions entirely.'
                         ]

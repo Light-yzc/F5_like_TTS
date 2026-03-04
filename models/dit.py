@@ -68,6 +68,39 @@ def apply_rotary_emb(
     return out
 
 
+def compute_diagonal_bias(
+    T_audio: int,
+    L_text: int,
+    gamma: float,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    """
+    Compute a diagonal attention bias to encourage monotonic alignment.
+
+    For audio frame t and text token l, the bias is:
+        bias(t, l) = -gamma * ((t / T_audio) - (l / L_text))^2
+
+    This gives ~0 penalty on the diagonal (where t/T ≈ l/L)
+    and large negative penalty far from the diagonal.
+
+    Args:
+        T_audio: number of audio frames (query length)
+        L_text:  number of text tokens (key length)
+        gamma:   strength of the diagonal constraint
+
+    Returns:
+        bias: (1, 1, T_audio, L_text) ready to broadcast over (B, H, T, L)
+    """
+    # Normalized positions: [0, 1]
+    audio_pos = torch.arange(T_audio, device=device, dtype=dtype) / max(T_audio - 1, 1)
+    text_pos = torch.arange(L_text, device=device, dtype=dtype) / max(L_text - 1, 1)
+    # Distance matrix: (T_audio, L_text)
+    dist = (audio_pos.unsqueeze(1) - text_pos.unsqueeze(0)) ** 2
+    bias = -gamma * dist
+    return bias.unsqueeze(0).unsqueeze(0)  # (1, 1, T_audio, L_text)
+
+
 class SiLUGatedFFN(nn.Module):
     """SiLU-gated Feed-Forward Network (same as LLaMA MLP)."""
 
@@ -112,6 +145,7 @@ class MultiHeadAttention(nn.Module):
         kv_mask: Optional[torch.Tensor] = None,
         kv_rope_cos: Optional[torch.Tensor] = None,
         kv_rope_sin: Optional[torch.Tensor] = None,
+        diagonal_bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         B, T, _ = x.shape
         kv_input = kv if self.is_cross and kv is not None else x
@@ -138,6 +172,13 @@ class MultiHeadAttention(nn.Module):
             attn_mask = kv_mask.unsqueeze(1).unsqueeze(2).bool()
             attn_mask = torch.where(attn_mask, 0.0, float("-inf"))
             attn_mask = attn_mask.to(q.dtype)
+
+        # Apply diagonal bias for cross-attention (monotonic alignment prior)
+        if self.is_cross and diagonal_bias is not None:
+            if attn_mask is not None:
+                attn_mask = attn_mask + diagonal_bias
+            else:
+                attn_mask = diagonal_bias
 
         out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
         out = out.transpose(1, 2).contiguous().view(B, T, -1)
@@ -229,6 +270,7 @@ class DiTBlock(nn.Module):
         padding_mask: Optional[torch.Tensor] = None,
         text_rope_cos: Optional[torch.Tensor] = None,
         text_rope_sin: Optional[torch.Tensor] = None,
+        diagonal_bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         # AdaLN modulation parameters (8 values)
         shift_sa, scale_sa, gate_sa, scale_ca, gate_ca, shift_ff, scale_ff, gate_ff = (
@@ -248,6 +290,7 @@ class DiTBlock(nn.Module):
             h, kv=text_kv, kv_mask=text_mask,
             rope_cos=rope_cos, rope_sin=rope_sin,
             kv_rope_cos=text_rope_cos, kv_rope_sin=text_rope_sin,
+            diagonal_bias=diagonal_bias,
         )
         x = x + h * gate_ca
 
@@ -295,6 +338,10 @@ class DiT(nn.Module):
         self.depth = depth
         self.gradient_checkpointing = False  # set via enable_gradient_checkpointing()
         self.use_text_expand = use_text_expand
+
+        # Diagonal attention bias: learnable gamma controls constraint strength
+        # Initialized to 5.0 — a moderate constraint that can adapt during training
+        self.diagonal_gamma = nn.Parameter(torch.tensor(5.0))
 
         # Input projection: [x_t ∥ prompt_mask] → dit_dim
         self.proj_in = nn.Linear(latent_dim + 1, dit_dim)
@@ -414,6 +461,14 @@ class DiT(nn.Module):
         # Text-token RoPE (independent, length = L_text)
         text_rope_cos, text_rope_sin = self.rotary_emb(L_text, x.device)
 
+        # Compute diagonal attention bias for monotonic cross-attention alignment
+        diag_bias = compute_diagonal_bias(
+            T, L_text,
+            gamma=self.diagonal_gamma.abs(),  # abs() ensures gamma stays positive
+            device=x.device,
+            dtype=x.dtype,
+        )
+
         # Transformer blocks
         for block in self.blocks:
             if self.gradient_checkpointing and self.training:
@@ -421,6 +476,7 @@ class DiT(nn.Module):
                     block, x, time_emb, text_kv, text_mask,
                     rope_cos, rope_sin, padding_mask,
                     text_rope_cos, text_rope_sin,
+                    diag_bias,
                     use_reentrant=False,
                 )
             else:
@@ -428,6 +484,7 @@ class DiT(nn.Module):
                     x, time_emb, text_kv, text_mask,
                     rope_cos, rope_sin, padding_mask,
                     text_rope_cos, text_rope_sin,
+                    diag_bias,
                 )
 
         # Output projection with AdaLN
