@@ -339,9 +339,12 @@ class DiT(nn.Module):
         self.gradient_checkpointing = False  # set via enable_gradient_checkpointing()
         self.use_text_expand = use_text_expand
 
-        # Diagonal attention bias: learnable gamma controls constraint strength
-        # Initialized to 5.0 — a moderate constraint that can adapt during training
-        self.diagonal_gamma = nn.Parameter(torch.tensor(5.0))
+        # Diagonal attention bias: per-layer learnable gamma controls constraint strength
+        # Each layer gets its own gamma, allowing shallow layers to be tight and deep layers to relax
+        # All initialized to 5.0 — a moderate constraint that adapts during training
+        self.diagonal_gammas = nn.ParameterList([
+            nn.Parameter(torch.tensor(5.0)) for _ in range(depth)
+        ])
 
         # Input projection: [x_t ∥ prompt_mask] → dit_dim
         self.proj_in = nn.Linear(latent_dim + 1, dit_dim)
@@ -461,16 +464,15 @@ class DiT(nn.Module):
         # Text-token RoPE (independent, length = L_text)
         text_rope_cos, text_rope_sin = self.rotary_emb(L_text, x.device)
 
-        # Compute diagonal attention bias for monotonic cross-attention alignment
-        diag_bias = compute_diagonal_bias(
-            T, L_text,
-            gamma=self.diagonal_gamma.abs(),  # abs() ensures gamma stays positive
-            device=x.device,
-            dtype=x.dtype,
-        )
-
         # Transformer blocks
-        for block in self.blocks:
+        for i, block in enumerate(self.blocks):
+            # Each layer computes its own diagonal bias with its own gamma
+            diag_bias = compute_diagonal_bias(
+                T, L_text,
+                gamma=self.diagonal_gammas[i].abs(),
+                device=x.device,
+                dtype=x.dtype,
+            )
             if self.gradient_checkpointing and self.training:
                 x = checkpoint(
                     block, x, time_emb, text_kv, text_mask,
