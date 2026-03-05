@@ -89,7 +89,7 @@ def train(args):
     audio_cfg = cfg["audio"]
     wandb.login()
     # Only resume wandb run when resuming training from checkpoint
-    wandb_kwargs = {"project": "vae_dit_tts_f5_text_enc_v3_fix_1", "config": cfg}
+    wandb_kwargs = {"project": "vae_dit_tts_f5_text_enc_v3_fix_ctc", "config": cfg}
     wandb.init(**wandb_kwargs)
     print(f"Device: {device}")
 
@@ -281,7 +281,7 @@ def train(args):
                     dur_weight = dur_weight_start + (dur_weight_end - dur_weight_start) * progress
 
                 # CTC weight decays linearly: 0.1 → 0.01 over steps 10k~50k
-                ctc_decay_start, ctc_decay_end = 10000, 50000
+                ctc_decay_start, ctc_decay_end = 200000, 5000000
                 ctc_weight_start, ctc_weight_end = 0.1, 0.01
                 if global_step < ctc_decay_start:
                     ctc_weight = ctc_weight_start
