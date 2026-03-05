@@ -259,17 +259,7 @@ def train(args):
                 # Duration predictor loss (detach text features)
                 dur_loss = dur_pred.loss(text_kv.detach(), attention_mask, target_frames, target_text_mask)
 
-                # CTC alignment loss
-                ctc_targets = batch["ctc_targets"].to(device)
-                ctc_target_lengths = batch["ctc_target_lengths"].to(device)
-                ctc_loss = ctc_head.loss(
-                    fm_losses["hidden_states"],
-                    target_mask,
-                    ctc_targets,
-                    ctc_target_lengths,
-                )
-
-                # Total loss (dur_weight decays linearly: 0.1 → 0.05 over steps 24k~65k)
+                # Duration weight decays linearly: 0.1 → 0.05 over steps 24k~65k
                 dur_decay_start, dur_decay_end = 24000, 65000
                 dur_weight_start, dur_weight_end = 0.1, 0.05
                 if global_step < dur_decay_start:
@@ -280,16 +270,29 @@ def train(args):
                     progress = (global_step - dur_decay_start) / (dur_decay_end - dur_decay_start)
                     dur_weight = dur_weight_start + (dur_weight_end - dur_weight_start) * progress
 
-                # CTC weight decays linearly: 0.1 → 0.01 over steps 10k~50k
-                ctc_decay_start, ctc_decay_end = 200000, 5000000
-                ctc_weight_start, ctc_weight_end = 0.1, 0.01
+                # CTC alignment loss (every 10 steps only, then fully off after 330k)
+                ctc_decay_start, ctc_decay_end = 300000, 480000
+                ctc_weight_start, ctc_weight_end = 0.02, 0.0
                 if global_step < ctc_decay_start:
                     ctc_weight = ctc_weight_start
                 elif global_step > ctc_decay_end:
-                    ctc_weight = ctc_weight_end
+                    ctc_weight = 0.0
                 else:
                     progress = (global_step - ctc_decay_start) / (ctc_decay_end - ctc_decay_start)
                     ctc_weight = ctc_weight_start + (ctc_weight_end - ctc_weight_start) * progress
+
+                use_ctc = (ctc_weight > 0) and (global_step % 25 == 0)
+                if use_ctc:
+                    ctc_targets = batch["ctc_targets"].to(device)
+                    ctc_target_lengths = batch["ctc_target_lengths"].to(device)
+                    ctc_loss = ctc_head.loss(
+                        fm_losses["hidden_states"],
+                        target_mask,
+                        ctc_targets,
+                        ctc_target_lengths,
+                    )
+                else:
+                    ctc_loss = torch.tensor(0.0, device=device)
 
                 loss = fm_losses["loss"] + dur_weight * dur_loss + ctc_weight * ctc_loss
 
