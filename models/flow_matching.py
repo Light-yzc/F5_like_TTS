@@ -56,6 +56,7 @@ class FlowMatching:
         null_text_kv: Optional[torch.Tensor] = None,
         padding_mask: Optional[torch.Tensor] = None,
         return_hidden: bool = False,
+        ap_layer_idx: Optional[int] = None,
     ) -> dict[str, torch.Tensor]:
         """
         Compute flow matching training loss on packed latent.
@@ -70,9 +71,10 @@ class FlowMatching:
             null_text_kv: (B, L_null, dit_dim) null condition for CFG training
             padding_mask: (B, T) 1=valid (prompt or target), 0=pad
             return_hidden: bool, if True, return DiT last-layer hidden states
+            ap_layer_idx: int|None, if set, return cross-attn weights from this layer
 
         Returns:
-            dict with 'loss', 'mse', and optionally 'hidden_states' keys
+            dict with 'loss', 'mse', and optionally 'hidden_states'/'attn_weights' keys
         """
         B, T, D = latent.shape
         device = latent.device
@@ -120,12 +122,14 @@ class FlowMatching:
             x_t, mask_channel, t, text_kv_train, text_mask_train,
             padding_mask=padding_mask,
             return_hidden=return_hidden,
+            ap_layer_idx=ap_layer_idx,
         )
 
         if return_hidden:
-            v_pred, hidden_states = dit_output
+            v_pred, hidden_states, attn_weights = dit_output
         else:
             v_pred = dit_output
+            attn_weights = None
 
         # Loss: only on valid target frames (where target_mask=1)
         sq_error = (v_pred - v_target).pow(2)  # (B, T, D)
@@ -140,6 +144,9 @@ class FlowMatching:
 
         if return_hidden:
             result["hidden_states"] = hidden_states
+
+        if attn_weights is not None:
+            result["attn_weights"] = attn_weights
 
         return result
 

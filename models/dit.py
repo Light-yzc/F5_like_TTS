@@ -146,6 +146,7 @@ class MultiHeadAttention(nn.Module):
         kv_rope_cos: Optional[torch.Tensor] = None,
         kv_rope_sin: Optional[torch.Tensor] = None,
         diagonal_bias: Optional[torch.Tensor] = None,
+        return_attn_weights: bool = False,
     ) -> torch.Tensor:
         B, T, _ = x.shape
         kv_input = kv if self.is_cross and kv is not None else x
@@ -179,6 +180,17 @@ class MultiHeadAttention(nn.Module):
                 attn_mask = attn_mask + diagonal_bias
             else:
                 attn_mask = diagonal_bias
+
+        if return_attn_weights:
+            # Naive attention: compute weights explicitly for Attention Prior Loss
+            scale = self.head_dim ** -0.5
+            scores = torch.matmul(q, k.transpose(-2, -1)) * scale  # (B, H, T, L)
+            if attn_mask is not None:
+                scores = scores + attn_mask
+            weights = torch.softmax(scores, dim=-1)  # (B, H, T, L)
+            out = torch.matmul(weights, v)  # (B, H, T, D_head)
+            out = out.transpose(1, 2).contiguous().view(B, T, -1)
+            return self.o_proj(out), weights
 
         out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
         out = out.transpose(1, 2).contiguous().view(B, T, -1)
@@ -271,6 +283,7 @@ class DiTBlock(nn.Module):
         text_rope_cos: Optional[torch.Tensor] = None,
         text_rope_sin: Optional[torch.Tensor] = None,
         diagonal_bias: Optional[torch.Tensor] = None,
+        return_cross_attn_weights: bool = False,
     ) -> torch.Tensor:
         # AdaLN modulation parameters (8 values)
         shift_sa, scale_sa, gate_sa, scale_ca, gate_ca, shift_ff, scale_ff, gate_ff = (
@@ -284,14 +297,19 @@ class DiTBlock(nn.Module):
         x = x + h * gate_sa
 
         # 2. Cross-Attention with AdaLN scale + gate
-        #    Q gets audio-frame RoPE, K gets independent text-token RoPE
         h = self.cross_attn_norm(x) * (1 + scale_ca)
-        h = self.cross_attn(
+        cross_attn_result = self.cross_attn(
             h, kv=text_kv, kv_mask=text_mask,
             rope_cos=rope_cos, rope_sin=rope_sin,
             kv_rope_cos=text_rope_cos, kv_rope_sin=text_rope_sin,
             diagonal_bias=diagonal_bias,
+            return_attn_weights=return_cross_attn_weights,
         )
+        if return_cross_attn_weights:
+            h, attn_weights = cross_attn_result
+        else:
+            h = cross_attn_result
+            attn_weights = None
         x = x + h * gate_ca
 
         # 3. FFN with AdaLN-Zero
@@ -299,6 +317,8 @@ class DiTBlock(nn.Module):
         h = self.ff(h)
         x = x + h * gate_ff
 
+        if return_cross_attn_weights:
+            return x, attn_weights
         return x
 
 
@@ -425,6 +445,7 @@ class DiT(nn.Module):
         text_mask: Optional[torch.Tensor] = None,
         padding_mask: Optional[torch.Tensor] = None,
         return_hidden: bool = False,
+        ap_layer_idx: Optional[int] = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -435,6 +456,7 @@ class DiT(nn.Module):
             text_mask:     (B, L)             text attention mask
             padding_mask:  (B, T)             1=valid, 0=pad (for self-attention)
             return_hidden: bool               if True, also return last block hidden states
+            ap_layer_idx:  int|None           if set, return cross-attn weights from this layer
         """
         B, T, D = x_t.shape
 
@@ -460,10 +482,12 @@ class DiT(nn.Module):
         text_rope_cos, text_rope_sin = self.rotary_emb(L_text, x.device)
 
         # Transformer blocks
+        attn_weights = None
         for i, block in enumerate(self.blocks):
-            # Diagonal bias disabled — CTC alignment loss handles alignment instead
             diag_bias = None
-            if self.gradient_checkpointing and self.training:
+            # Return cross-attention weights from selected layer for Attention Prior
+            want_attn = (ap_layer_idx is not None and i == ap_layer_idx)
+            if self.gradient_checkpointing and self.training and not want_attn:
                 x = checkpoint(
                     block, x, time_emb, text_kv, text_mask,
                     rope_cos, rope_sin, padding_mask,
@@ -472,12 +496,17 @@ class DiT(nn.Module):
                     use_reentrant=False,
                 )
             else:
-                x = block(
+                block_out = block(
                     x, time_emb, text_kv, text_mask,
                     rope_cos, rope_sin, padding_mask,
                     text_rope_cos, text_rope_sin,
                     diag_bias,
+                    return_cross_attn_weights=want_attn,
                 )
+                if want_attn:
+                    x, attn_weights = block_out
+                else:
+                    x = block_out
 
         # Save hidden states before final projection (for CTC alignment loss)
         hidden = x if return_hidden else None
@@ -488,7 +517,7 @@ class DiT(nn.Module):
         velocity = self.proj_out(x)  # (B, T, latent_dim)
 
         if return_hidden:
-            return velocity, hidden
+            return velocity, hidden, attn_weights
         return velocity
 
     @property

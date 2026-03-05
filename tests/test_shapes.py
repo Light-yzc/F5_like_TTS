@@ -271,9 +271,10 @@ def test_dit_return_hidden():
     assert isinstance(out, torch.Tensor), "Without return_hidden should return tensor"
 
     # With return_hidden
-    velocity, hidden = dit(x_t, mask, t, text_kv, text_mask, padding_mask=padding_mask, return_hidden=True)
+    velocity, hidden, attn_w = dit(x_t, mask, t, text_kv, text_mask, padding_mask=padding_mask, return_hidden=True)
     assert velocity.shape == (B, T_total, 16), f"velocity shape: {velocity.shape}"
     assert hidden.shape == (B, T_total, 128), f"hidden shape: {hidden.shape}"
+    assert attn_w is None, "attn_weights should be None when ap_layer_idx not set"
     print("✓ DiT return_hidden")
 
 
@@ -306,6 +307,83 @@ def test_flow_matching_with_ctc():
         f"hidden_states shape: {losses['hidden_states'].shape}"
     print("✓ FlowMatching.compute_loss with return_hidden")
 
+def test_attention_prior_loss():
+    from models.attention_prior_loss import AttentionPriorLoss
+    ap = AttentionPriorLoss(sigma=0.4)
+    B, H, T, L = 2, 4, 30, 10
+    attn = torch.softmax(torch.randn(B, H, T, L), dim=-1)
+    text_mask = torch.ones(B, L)
+    target_mask = torch.cat([torch.zeros(B, 10), torch.ones(B, 20)], dim=1)
+
+    loss = ap(attn, text_mask, target_mask)
+    assert loss.shape == (), f"AP loss should be scalar, got {loss.shape}"
+    assert loss.item() >= 0, "AP loss should be non-negative"
+    # Diagonal attention should give lower loss than random
+    diag_attn = torch.zeros(B, H, T, L)
+    for t in range(T):
+        l = min(int(t / T * L), L - 1)
+        diag_attn[:, :, t, l] = 1.0
+    diag_loss = ap(diag_attn, text_mask, target_mask)
+    assert diag_loss.item() < loss.item(), "Diagonal attention should have lower loss"
+    print(f"✓ AttentionPriorLoss (random={loss.item():.4f}, diag={diag_loss.item():.4f})")
+
+
+def test_dit_attn_weights():
+    dit = DiT(latent_dim=16, dit_dim=128, depth=4, heads=2, head_dim=64, ff_mult=2.0)
+    B, T_total, L_text = 2, 30, 10
+
+    x_t = torch.randn(B, T_total, 16)
+    mask = torch.cat([torch.ones(B, 10), torch.zeros(B, 20)], dim=1)
+    t = torch.rand(B)
+    text_kv = torch.randn(B, L_text, 128)
+    text_mask = torch.ones(B, L_text)
+    padding_mask = torch.ones(B, T_total)
+
+    # With ap_layer_idx=2 (middle of 4 layers)
+    velocity, hidden, attn_weights = dit(
+        x_t, mask, t, text_kv, text_mask,
+        padding_mask=padding_mask,
+        return_hidden=True,
+        ap_layer_idx=2,
+    )
+    assert attn_weights is not None, "attn_weights should not be None"
+    assert attn_weights.shape == (B, 2, T_total, L_text), f"attn_weights shape: {attn_weights.shape}"
+    # Without ap_layer_idx
+    velocity2 = dit(x_t, mask, t, text_kv, text_mask, padding_mask=padding_mask)
+    assert isinstance(velocity2, torch.Tensor), "Without return_hidden should return tensor"
+    print("✓ DiT ap_layer_idx returns attn_weights")
+
+
+def test_flow_matching_with_ap():
+    dit = DiT(latent_dim=16, dit_dim=128, depth=4, heads=2, head_dim=64, ff_mult=2.0)
+    flow = FlowMatching(cfg_dropout_rate=0.5)
+
+    B, T_prompt, T_target = 2, 10, 20
+    T_total = T_prompt + T_target
+
+    latent = torch.randn(B, T_total, 16)
+    prompt_mask = torch.zeros(B, T_total)
+    target_mask = torch.zeros(B, T_total)
+    padding_mask = torch.ones(B, T_total)
+    prompt_mask[:, :T_prompt] = 1.0
+    target_mask[:, T_prompt:] = 1.0
+
+    text_kv = torch.randn(B, 8, 128)
+    text_mask = torch.ones(B, 8)
+    null_kv = torch.zeros(B, 1, 128)
+
+    losses = flow.compute_loss(
+        dit, latent, prompt_mask, target_mask,
+        text_kv, text_mask, null_kv,
+        padding_mask=padding_mask,
+        return_hidden=True,
+        ap_layer_idx=2,
+    )
+    assert "attn_weights" in losses, "Missing attn_weights in return"
+    assert losses["attn_weights"].shape == (B, 2, T_total, 8), \
+        f"attn_weights shape: {losses['attn_weights'].shape}"
+    print("✓ FlowMatching.compute_loss with ap_layer_idx")
+
 
 if __name__ == "__main__":
     print("=" * 60)
@@ -330,6 +408,13 @@ if __name__ == "__main__":
     test_ctc_head_loss()
     test_dit_return_hidden()
     test_flow_matching_with_ctc()
+
+    print("-" * 60)
+    print("Attention Prior Tests")
+    print("-" * 60)
+    test_attention_prior_loss()
+    test_dit_attn_weights()
+    test_flow_matching_with_ap()
 
     print("=" * 60)
     print("All tests passed! ✓")
