@@ -282,8 +282,9 @@ def train(args):
                     dur_weight = dur_weight_start + (dur_weight_end - dur_weight_start) * progress
 
                 # CTC alignment loss (every 25 steps, decaying weight)
-                ctc_decay_start, ctc_decay_end = 300000, 480000
-                ctc_weight_start, ctc_weight_end = 0.02, 0.0
+                # 278k~300k: 0.02 (stable), 300k~340k: 0.02→0.005, 340k+: 0.005
+                ctc_decay_start, ctc_decay_end = 300000, 340000
+                ctc_weight_start, ctc_weight_end = 0.02, 0.005
                 if global_step < ctc_decay_start:
                     ctc_weight = ctc_weight_start
                 elif global_step > ctc_decay_end:
