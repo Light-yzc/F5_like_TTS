@@ -22,7 +22,6 @@ from models.F5_like_text_encoder import F5TextEncoder, CharTokenizer
 from models.duration_predictor import DurationPredictor
 from models.flow_matching import FlowMatching
 from models.ctc_head import CTCAlignmentHead
-from models.attention_prior_loss import AttentionPriorLoss
 from data.dataset import TTSDataset, collate_fn
 from inference import inference
 from models.vae import load_vae, vae_encode, vae_decode
@@ -123,10 +122,6 @@ def train(args):
         vocab_size=char_tokenizer.vocab_size,
     ).to(device)
     print(f"CTC Head parameters: {sum(p.numel() for p in ctc_head.parameters()) / 1e3:.1f}K")
-
-    # Attention Prior Loss (no learnable params, just a penalty matrix)
-    ap_loss_fn = AttentionPriorLoss(sigma=0.4).to(device)
-    print(f"Attention Prior: sigma=0.4, layer={cfg['model']['depth'] // 2}")
     print(f"TextEncoder parameters: {text_encoder.num_params / 1e6:.1f}M")
 
     # Dataset
@@ -255,16 +250,13 @@ def train(args):
 
                 # Decide which auxiliary losses to compute this step
                 use_ctc = (global_step % 25 == 0)
-                use_ap = (global_step % 5 == 0)
-                ap_layer = (cfg["model"]["depth"] // 2) if use_ap else None
 
-                # Flow matching loss (with hidden states for CTC, attn weights for AP)
+                # Flow matching loss (with hidden states for CTC)
                 fm_losses = flow.compute_loss(
                     dit, latent, prompt_mask, target_mask,
                     text_kv, text_mask, null_kv,
                     padding_mask=padding_mask,
                     return_hidden=True,
-                    ap_layer_idx=ap_layer,
                 )
 
                 # Duration predictor loss (detach text features)
@@ -305,18 +297,7 @@ def train(args):
                 else:
                     ctc_loss = torch.tensor(0.0, device=device)
 
-                # Attention Prior loss (every 5 steps, prevents repetition)
-                ap_weight = 0.05
-                if use_ap and "attn_weights" in fm_losses:
-                    ap_loss = ap_loss_fn(
-                        fm_losses["attn_weights"],
-                        text_mask,
-                        target_mask,
-                    )
-                else:
-                    ap_loss = torch.tensor(0.0, device=device)
-
-                loss = fm_losses["loss"] + dur_weight * dur_loss + ctc_weight * ctc_loss + ap_weight * ap_loss
+                loss = fm_losses["loss"] + dur_weight * dur_loss + ctc_weight * ctc_loss
 
                 # NaN check on loss
                 if torch.isnan(loss) or torch.isinf(loss):
@@ -333,8 +314,6 @@ def train(args):
                     "train/dur_weight": dur_weight,
                     "train/ctc_loss": ctc_loss.item(),
                     "train/ctc_weight": ctc_weight,
-                    "train/ap_loss": ap_loss.item(),
-                    "train/ap_weight": ap_weight,
                     "train/lr": scheduler.get_last_lr()[0],
                 }, step=global_step)
 
