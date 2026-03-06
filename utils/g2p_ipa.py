@@ -65,7 +65,7 @@ LANG_MAP = {
 }
 
 # Compact IPA separator: space between words, nothing between phones
-IPA_SEP = Separator(phone="", word=" ", syllable="")
+IPA_SEP = Separator(phone="", word=" ", syllable="") if HAS_PHONEMIZER else None
 
 # ─── Persistent backend singletons ──────────────────────────────────
 # Key optimization: reuse backend instances instead of creating new ones.
