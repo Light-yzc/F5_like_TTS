@@ -96,17 +96,11 @@ inference(
 
 ## 🎧 音频示例
 
-**1. EN** — We propose a new simple network architecture, the Transformer, based solely on attention mechanisms, dispensing with recurrence and convolutions entirely.
-
-<video controls src="https://github.com/Light-yzc/F5_like_TTS/raw/main/output_example/audio_EN_278000_9eeb8580269dc60eca01.mp4"></video>
-
-**2. ZH** — 杀死我的责任，你打算怎么负责呢？纯白的吸血姬这么说着。
-
-<video controls src="https://github.com/Light-yzc/F5_like_TTS/raw/main/output_example/audio_ZH_283999_cfe560587928520efd53.mp4"></video>
-
-**3. JA** — 歌に物語を乗せる、全身で感情を表現する。ステージでの活動は流動的で、とても困難です。でも、誰も傷つかない、皆さんが笑顔で一つになる感覚は、とても素晴らしいものだと思います
-
-<video controls src="https://github.com/Light-yzc/F5_like_TTS/raw/main/output_example/output.mp4"></video>
+| # | 语言 | 文本 | 音频 |
+|---|------|------|------|
+| 1 | EN | We propose a new simple network architecture, the Transformer, based solely on attention mechanisms, dispensing with recurrence and convolutions entirely. | [▶ 播放](./output_example/audio_EN_278000_9eeb8580269dc60eca01.wav) |
+| 2 | ZH | 杀死我的责任，你打算怎么负责呢？纯白的吸血姬这么说着。 | [▶ 播放](./output_example/audio_ZH_283999_cfe560587928520efd53.wav) |
+| 3 | JA | 歌に物語を乗せる、全身で感情を表現する。ステージでの活動は流動的で、とても困難です。でも、誰も傷つかない、皆さんが笑顔で一つになる感覚は、とても素晴らしいものだと思います | [▶ 播放](./output_example/output.wav) |
 
 ## 📁 主要文件
 

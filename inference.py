@@ -11,6 +11,7 @@ Usage:
 """
 
 import argparse
+import re
 import torch
 import torchaudio
 from torch.amp import autocast
@@ -21,6 +22,45 @@ from models.duration_predictor import DurationPredictor
 from models.flow_matching import FlowMatching
 # from utils.g2p import text_to_phonemes
 from utils.g2p_ipa import text_to_phonemes_ipa as text_to_phonemes
+
+
+# ─── Sentence splitting ─────────────────────────────────────────────
+# Chinese/Japanese punctuation + English punctuation
+_SPLIT_PATTERN = re.compile(r'(?<=[。！？；…，、,.!?;])')
+
+
+def split_text(text: str, min_len: int = 8) -> list[str]:
+    """
+    Split long text by punctuation marks.
+
+    Args:
+        text:    input text, e.g. "你好，今天天气真好。我们出去玩吧！"
+        min_len: minimum segment length; shorter segments are merged with
+                 the previous one to avoid overly short fragments.
+
+    Returns:
+        list of text segments, e.g. ["你好，今天天气真好。", "我们出去玩吧！"]
+    """
+    raw_parts = _SPLIT_PATTERN.split(text)
+    raw_parts = [p for p in raw_parts if p.strip()]
+
+    if len(raw_parts) <= 1:
+        return [text.strip()] if text.strip() else []
+
+    # Merge short segments with the previous one
+    merged = [raw_parts[0]]
+    for part in raw_parts[1:]:
+        if len(merged[-1]) < min_len:
+            merged[-1] += part
+        else:
+            merged.append(part)
+
+    # If the last segment is too short, merge it back
+    if len(merged) > 1 and len(merged[-1]) < min_len:
+        merged[-2] += merged[-1]
+        merged.pop()
+
+    return merged
 
 def load_checkpoint(ckpt_path: str, device: torch.device, vocab_path_override: str = None):
     """Load checkpoint and reconstruct models."""
@@ -208,6 +248,185 @@ def inference(
 
     return gen_latent
 
+@torch.no_grad()
+def inference_long(
+    dit, text_encoder, dur_pred, flow, cfg,
+    prompt_audio_path: str,
+    prompt_text: str,
+    tts_text: str,
+    prompt_language: str = "ZH",
+    tts_language: str = "ZH",
+    char_tokenizer: CharTokenizer = None,
+    vae_encode_fn=None,
+    vae_decode_fn=None,
+    output_path: str = "output.wav",
+    duration: float = None,
+    cfg_scale: float = None,
+    n_steps: int = None,
+    seed: int = None,
+    min_split_len: int = 8,
+):
+    """
+    Long-text TTS inference with automatic sentence splitting.
+
+    Splits tts_text by punctuation, runs each segment independently
+    (sharing the same prompt audio), and concatenates the output waveforms.
+
+    If the text has no splittable punctuation or is short enough,
+    falls back to single-segment inference().
+    """
+    segments = split_text(tts_text, min_len=min_split_len)
+
+    if len(segments) <= 1:
+        # No splitting needed
+        return inference(
+            dit, text_encoder, dur_pred, flow, cfg,
+            prompt_audio_path=prompt_audio_path,
+            prompt_text=prompt_text,
+            tts_text=tts_text,
+            prompt_language=prompt_language,
+            tts_language=tts_language,
+            char_tokenizer=char_tokenizer,
+            vae_encode_fn=vae_encode_fn,
+            vae_decode_fn=vae_decode_fn,
+            output_path=output_path,
+            duration=duration,
+            cfg_scale=cfg_scale,
+            n_steps=n_steps,
+            seed=seed,
+        )
+
+    print(f"Split into {len(segments)} segments:")
+    for i, seg in enumerate(segments):
+        print(f"  [{i+1}] {seg}")
+
+    device = next(dit.parameters()).device
+    audio_cfg = cfg["audio"]
+    sample_rate = audio_cfg["sample_rate"]
+
+    # Encode prompt audio ONCE (shared across all segments)
+    with autocast('cuda', dtype=torch.float16):
+        if vae_encode_fn is not None:
+            wav, sr = torchaudio.load(prompt_audio_path)
+            if sr != sample_rate:
+                wav = torchaudio.functional.resample(wav, sr, sample_rate)
+            if wav.shape[0] > 1:
+                wav = wav.mean(dim=0, keepdim=True)
+            prompt_latent = vae_encode_fn(wav.unsqueeze(0).to(device))
+        else:
+            latent_rate = audio_cfg["latent_rate"]
+            prompt_latent = torch.randn(1, 3 * latent_rate, cfg["model"]["latent_dim"], device=device)
+
+    # Generate each segment and collect waveforms
+    waveforms = []
+    all_latents = []
+
+    for i, seg_text in enumerate(segments):
+        print(f"\n--- Segment [{i+1}/{len(segments)}]: {seg_text} ---")
+
+        # Per-segment duration: proportionally split if total duration specified
+        seg_duration = None
+        if duration is not None:
+            # Distribute total duration by character count ratio
+            ratio = len(seg_text) / len(tts_text)
+            seg_duration = duration * ratio
+
+        seg_latent = _inference_core(
+            dit, text_encoder, dur_pred, flow, cfg,
+            prompt_latent=prompt_latent,
+            prompt_text=prompt_text,
+            tts_text=seg_text,
+            prompt_language=prompt_language,
+            tts_language=tts_language,
+            char_tokenizer=char_tokenizer,
+            duration=seg_duration,
+            cfg_scale=cfg_scale,
+            n_steps=n_steps,
+            seed=seed,
+        )
+        all_latents.append(seg_latent)
+
+        if vae_decode_fn is not None:
+            seg_wav = vae_decode_fn(seg_latent)
+            if seg_wav.dim() == 3:
+                seg_wav = seg_wav.squeeze(0)
+            waveforms.append(seg_wav)
+
+    # Concatenate waveforms
+    if waveforms:
+        full_wav = torch.cat(waveforms, dim=-1)  # concat along time
+        torchaudio.save(output_path, full_wav.cpu().float(), sample_rate)
+        print(f"\nSaved concatenated output ({len(segments)} segments) to: {output_path}")
+
+    full_latent = torch.cat(all_latents, dim=1)
+    return full_latent
+
+
+def _inference_core(
+    dit, text_encoder, dur_pred, flow, cfg,
+    prompt_latent: torch.Tensor,
+    prompt_text: str,
+    tts_text: str,
+    prompt_language: str = "ZH",
+    tts_language: str = "ZH",
+    char_tokenizer: CharTokenizer = None,
+    duration: float = None,
+    cfg_scale: float = None,
+    n_steps: int = None,
+    seed: int = None,
+) -> torch.Tensor:
+    """Core inference logic (text encode → duration → sample). Returns gen_latent."""
+    device = next(dit.parameters()).device
+    audio_cfg = cfg["audio"]
+    latent_rate = audio_cfg["latent_rate"]
+
+    with autocast('cuda', dtype=torch.float16):
+        mapped_prompt_text = text_to_phonemes(prompt_text, prompt_language)
+        mapped_tts_text = text_to_phonemes(tts_text, tts_language)
+        combined_text = f"{mapped_prompt_text} [SEP] {mapped_tts_text}"
+
+        if char_tokenizer is not None:
+            tokens = char_tokenizer(combined_text, max_length=512)
+        else:
+            fallback_tokenizer = CharTokenizer()
+            tokens = fallback_tokenizer.batch_encode([combined_text], max_len=512)
+
+        input_ids = tokens["input_ids"].to(device)
+        attention_mask = tokens["attention_mask"].to(device)
+
+        target_text_mask = torch.zeros_like(attention_mask)
+        start_idx = len(mapped_prompt_text) + 7
+        target_text_mask[0, start_idx:] = attention_mask[0, start_idx:]
+
+        text_kv, text_mask = text_encoder(input_ids, attention_mask)
+
+        null_text_kv = torch.zeros(1, 1, cfg["model"]["dit_dim"], device=device)
+        null_text_mask = torch.ones(1, 1, device=device)
+
+        if duration is not None:
+            T_gen = int(duration * latent_rate)
+        else:
+            T_gen = int(dur_pred(text_kv, attention_mask, target_text_mask).item())
+            T_gen = max(latent_rate, T_gen)
+            print(f"Predicted duration: {T_gen / latent_rate:.2f}s ({T_gen} frames)")
+
+        gen_latent = flow.sample(
+            dit_model=dit,
+            prompt_latent=prompt_latent,
+            T_gen=T_gen,
+            text_kv=text_kv,
+            text_mask=text_mask,
+            null_text_kv=null_text_kv,
+            null_text_mask=null_text_mask,
+            cfg_scale=cfg_scale,
+            n_steps=n_steps,
+            seed=seed,
+            show_progress=True,
+        )
+        print(f"Generated latent shape: {gen_latent.shape}")
+
+    return gen_latent
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="VAE-DiT TTS Inference")
@@ -223,6 +442,7 @@ if __name__ == "__main__":
     parser.add_argument("--n_steps", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--vocab", type=str, default=None, help="Path to char_vocab.json")
+    parser.add_argument("--split", action="store_true", help="Split long text by punctuation")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -230,7 +450,8 @@ if __name__ == "__main__":
         args.checkpoint, device, vocab_path_override=args.vocab,
     )
 
-    inference(
+    infer_fn = inference_long if args.split else inference
+    infer_fn(
         dit, text_encoder, dur_pred, flow, cfg,
         prompt_audio_path=args.prompt_audio,
         prompt_text=args.prompt_text,
