@@ -96,11 +96,28 @@ inference(
 
 ## 🎧 音频示例
 
-| # | 语言 | 文本 | 音频 |
-|---|------|------|------|
-| 1 | EN | We propose a new simple network architecture, the Transformer, based solely on attention mechanisms, dispensing with recurrence and convolutions entirely. | <audio controls src="./output_example/audio_EN_278000_9eeb8580269dc60eca01.wav"></audio> |
-| 2 | ZH | 杀死我的责任，你打算怎么负责呢？纯白的吸血姬这么说着。 | <audio controls src="./output_example/audio_ZH_283999_cfe560587928520efd53.wav"></audio> |
-| 3 | JA | 歌に物語を乗せる、全身で感情を表現する。ステージでの活動は流動的で、とても困難です。でも、誰も傷つかない、皆さんが笑顔で一つになる感覚は、とても素晴らしいものだと思います | <audio controls src="./output_example/output.wav"></audio> |
+<table>
+<thead>
+<tr><th>#</th><th>语言</th><th>文本</th><th>音频</th></tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td><td>EN</td>
+<td>We propose a new simple network architecture, the Transformer, based solely on attention mechanisms, dispensing with recurrence and convolutions entirely.</td>
+<td><audio controls src="./output_example/audio_EN_278000_9eeb8580269dc60eca01.wav"></audio></td>
+</tr>
+<tr>
+<td>2</td><td>ZH</td>
+<td>杀死我的责任，你打算怎么负责呢？纯白的吸血姬这么说着。</td>
+<td><audio controls src="./output_example/audio_ZH_283999_cfe560587928520efd53.wav"></audio></td>
+</tr>
+<tr>
+<td>3</td><td>JA</td>
+<td>歌に物語を乗せる、全身で感情を表現する。ステージでの活動は流動的で、とても困難です。でも、誰も傷つかない、皆さんが笑顔で一つになる感覚は、とても素晴らしいものだと思います</td>
+<td><audio controls src="./output_example/output.wav"></audio></td>
+</tr>
+</tbody>
+</table>
 
 ## 📁 主要文件
 
