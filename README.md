@@ -94,6 +94,14 @@ inference(
 
 参考本项目提供的 [`inference_notebook.ipynb`](./inference_notebook.ipynb)，可以在 Jupyter/Colab 中直接运行、带音频播放和批量生成功能。
 
+## 🎧 音频示例
+
+| # | 语言 | 文本 | 音频 |
+|---|------|------|------|
+| 1 | EN | We propose a new simple network architecture, the Transformer, based solely on attention mechanisms, dispensing with recurrence and convolutions entirely. | <audio controls src="./output_example/audio_EN_278000_9eeb8580269dc60eca01.wav"></audio> |
+| 2 | ZH | 杀死我的责任，你打算怎么负责呢？纯白的吸血姬这么说着。 | <audio controls src="./output_example/audio_ZH_283999_cfe560587928520efd53.wav"></audio> |
+| 3 | JA | 歌に物語を乗せる、全身で感情を表現する。ステージでの活動は流動的で、とても困難です。でも、誰も傷つかない、皆さんが笑顔で一つになる感覚は、とても素晴らしいものだと思います | <audio controls src="./output_example/output.wav"></audio> |
+
 ## 📁 主要文件
 
 ```
