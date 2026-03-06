@@ -76,10 +76,10 @@ from inference import inference
 # 注意：如果遇到长句漏音，请取消下方 duration 参数的注释并手动估算时长
 inference(
     dit, text_encoder, dur_pred, flow, cfg,
-    prompt_audio_path="prompt.wav",          # 你的 3-10 秒参考音频
-    prompt_text="参考音频里说的文字内容",
+    prompt_audio_path="ref_audio.mp3",          # 你的 3-10 秒参考音频
+    prompt_text="誰であれ、戦う心があるのなら──",
     tts_text="你好，今天天气真好！",          # 你想合成的文字
-    prompt_language="ZH",
+    prompt_language="JA",
     tts_language="ZH",
     char_tokenizer=tokenizer,
     vae_encode_fn=lambda wav: vae_encode(vae, wav),
