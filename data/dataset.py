@@ -323,15 +323,10 @@ class TTSDatasetLoRA(Dataset):
         latent = self._load_latent(sample["latent_path"])
         text = sample["text"]
 
-        # If audio exceeds max_frames, randomly crop BOTH audio and text
+        # If audio exceeds max_frames, truncate from the beginning
         if latent.shape[0] > self.max_frames:
-            total_frames = latent.shape[0]
-            start = random.randint(0, total_frames - self.max_frames)
-            end = start + self.max_frames
-            text_start = int(len(text) * start / total_frames)
-            text_end = int(len(text) * end / total_frames)
-            text = text[text_start:text_end] if text_end > text_start else text
-            latent = latent[start:end]
+            text = text[:int(len(text) * self.max_frames / latent.shape[0])]
+            latent = latent[:self.max_frames]
 
         if latent.shape[0] < self.min_frames:
             latent = F.pad(latent, (0, 0, 0, self.min_frames - latent.shape[0]))
