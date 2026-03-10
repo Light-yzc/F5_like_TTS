@@ -275,9 +275,7 @@ def train_lora(args):
             if global_step % train_cfg.get("infer_every", 500) == 0:
                 try:
                     tts_texts = [
-                        'ZH_杀死我的责任，你打算怎么负责呢？"纯白的吸血姬这么说着。',
-                        'JA_ありがとうございます！なんだか、すごく嬉しいです、先輩！',
-                        'EN_We propose a new simple network architecture, the Transformer.'
+                        'JA_口を吸うたびに見つめ合い、たまらずにまた重なる',
                     ]
                     dit.eval()
                     vae_cfg = cfg["vae"]
@@ -289,8 +287,8 @@ def train_lora(args):
                             output_path = f"outputs_lora/lora_step_{global_step}_{language}.wav"
                             inference(
                                 dit, text_encoder, dur_pred, flow, cfg,
-                                prompt_audio_path="ref_audio.mp3",
-                                prompt_text="カルデア式ですね。わかります。",
+                                prompt_audio_path="lora_ref_audio.mp3",
+                                prompt_text="リラックスせんと、眠れんよ?",
                                 tts_text=text,
                                 prompt_language="JA",
                                 tts_language=language,

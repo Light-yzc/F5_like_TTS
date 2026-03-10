@@ -33,8 +33,8 @@ model:
   sway_coef: -1.0
 
 lora:
-  rank: 16
-  alpha: 16
+  rank: 32
+  alpha: 32
   target_modules: ["q_proj", "v_proj", "k_proj", "o_proj"]
   dropout: 0.05
 
