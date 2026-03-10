@@ -254,3 +254,103 @@ def collate_fn(batch: list[dict], tokenizer=None, max_text_len: int = 512) -> di
         result["texts"] = [item["full_text"] for item in batch]
 
     return result
+
+
+class TTSDatasetLoRA(Dataset):
+    """
+    Simplified dataset for LoRA fine-tuning.
+    No speaker grouping — splits each utterance into prompt + target
+    by random ratio. Text is split at the same character ratio.
+
+    Data directory structure:
+      data_root/
+        wav/
+          sample1.pt
+        content.txt   — lines like "speaker_filename.pt_text"
+    """
+
+    def __init__(
+        self,
+        data_root: str,
+        language: str = "JA",
+        latent_rate: int = 25,
+        min_duration_sec: float = 3.0,
+        max_duration_sec: float = 30.0,
+        prompt_ratio_min: float = 0.2,
+        prompt_ratio_max: float = 0.5,
+    ):
+        super().__init__()
+        self.data_root = data_root
+        self.language = language
+        self.latent_rate = latent_rate
+        self.min_frames = int(min_duration_sec * latent_rate)
+        self.max_frames = int(max_duration_sec * latent_rate)
+        self.prompt_ratio_min = prompt_ratio_min
+        self.prompt_ratio_max = prompt_ratio_max
+
+        self.samples = []
+        content_path = os.path.join(data_root, "content.txt")
+        with open(content_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split("_", 2)
+                if len(parts) < 3:
+                    continue
+                speaker, filename, text = parts
+                latent_path = os.path.join(data_root, "wav", filename)
+                if os.path.exists(latent_path):
+                    self.samples.append({
+                        "latent_path": latent_path,
+                        "text": text,
+                    })
+
+        print(f"TTSDatasetLoRA: {len(self.samples)} samples, language={language}")
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def _load_latent(self, path: str) -> torch.Tensor:
+        latent = torch.load(path, map_location="cpu", weights_only=True)
+        if latent.dim() == 3:
+            latent = latent.mean(dim=0)
+        if latent.shape[0] > self.max_frames:
+            start = random.randint(0, latent.shape[0] - self.max_frames)
+            latent = latent[start : start + self.max_frames]
+        return latent
+
+    def __getitem__(self, idx: int) -> dict:
+        sample = self.samples[idx]
+        latent = self._load_latent(sample["latent_path"])
+        text = sample["text"]
+
+        if latent.shape[0] < self.min_frames:
+            latent = F.pad(latent, (0, 0, 0, self.min_frames - latent.shape[0]))
+
+        # Random split ratio
+        ratio = random.uniform(self.prompt_ratio_min, self.prompt_ratio_max)
+        split_frame = max(1, min(int(latent.shape[0] * ratio), latent.shape[0] - 1))
+        prompt_latent = latent[:split_frame]
+        target_latent = latent[split_frame:]
+
+        # Split text: prompt is partial, target is FULL text
+        split_char = max(1, int(len(text) * ratio))
+        prompt_text = text[:split_char]
+        target_text = text  # full text as target
+
+        lang = self.language
+        mapped_prompt = text_to_phonemes(prompt_text, lang)
+        mapped_target = text_to_phonemes(target_text, lang)
+        full_text = f"{mapped_prompt} [SEP] {mapped_target}"
+
+        return {
+            "prompt_latent": prompt_latent,
+            "target_latent": target_latent,
+            "full_text": full_text,
+            "prompt_text_mapped": mapped_prompt,
+            "target_text_mapped": mapped_target,
+            "language": lang,
+            "total_frames": prompt_latent.shape[0] + target_latent.shape[0],
+            "target_frames": target_latent.shape[0],
+        }

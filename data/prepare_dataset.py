@@ -232,6 +232,30 @@ def handle_FGO_audio_and_text(base_dir, processed, vae):
   with open(os.path.join(processed, 'content.txt'), 'w', encoding='utf-8') as fout:
     fout.writelines(text_line)
 
+def handle_asmr_text(base_dir, processed_dir, vae):
+    file_lists = os.listdir(base_dir)
+    for file in file_lists:
+        if file.endswith('.wav'):
+            audio_path = os.path.join(base_dir, file)
+            try:
+                wav, sr = torchaudio.load(audio_path)
+                if sr != 48000:
+                    wav = torchaudio.functional.resample(wav, orig_freq=sr, new_freq=48000)
+                wav = torch.clamp(wav, -1.0, 1.0).to(device=vae.device, dtype=vae.dtype).unsqueeze(1).repeat(1, 2, 1)
+                latent = vae_encode(vae, wav)
+                latent = latent.squeeze(0).cpu()  # (T, D)
+                torch.save(latent, os.path.join(processed_dir, file.split('.')[0] + '.pt'))
+
+                text_file = file.split('.')[0] + '.txt'
+                with open(os.path.join(base_dir, text_file), 'r', encoding='utf-8') as f:
+                    text = f.read().strip()
+                text_line.append(f"{file.split('.')[0]}.pt_{text}\n")
+            except Exception as e:
+                print(f"Skipping {file}: {e}")
+
+    with open(os.path.join(processed_dir, 'content.txt'), 'w', encoding='utf-8') as fout:
+        fout.writelines(text_line)
+        
 def handle_txt(base_dir: str, processed_dir: str, split: str):
     """
     Parse content.txt and extract Chinese characters only.
@@ -289,6 +313,8 @@ with torch.no_grad():
         handle_LibriTTS_audio_and_text(args.base_dir, args.processed_dir, vae)
       elif args.dataset_name == "FGO":
         handle_FGO_audio_and_text(args.base_dir, args.processed_dir, vae)
+      elif args.dataset_name == "asmr":
+        handle_asmr_audio_and_text(args.base_dir, args.processed_dir, vae)
       print("Done!")
 
 

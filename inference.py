@@ -62,8 +62,13 @@ def split_text(text: str, min_len: int = 8) -> list[str]:
 
     return merged
 
-def load_checkpoint(ckpt_path: str, device: torch.device, vocab_path_override: str = None):
-    """Load checkpoint and reconstruct models."""
+def load_checkpoint(ckpt_path: str, device: torch.device, vocab_path_override: str = None, lora_path: str = None):
+    """Load checkpoint and reconstruct models.
+    
+    Args:
+        lora_path: optional path to PEFT LoRA adapter directory.
+                   If provided, loads LoRA weights on top of the base DiT.
+    """
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
     cfg = ckpt["config"]
     model_cfg = cfg["model"]
@@ -79,6 +84,13 @@ def load_checkpoint(ckpt_path: str, device: torch.device, vocab_path_override: s
         ff_mult=model_cfg["ff_mult"],
     ).to(device)
     dit.load_state_dict(ckpt["dit"], strict=False)
+
+    # Apply LoRA if provided
+    if lora_path is not None:
+        from peft import PeftModel
+        dit = PeftModel.from_pretrained(dit, lora_path)
+        print(f"Loaded LoRA adapter from: {lora_path}")
+
     dit.eval()
 
     # Load char vocab
@@ -172,9 +184,6 @@ def inference(
             wav, sr = torchaudio.load(prompt_audio_path)
             if sr != sample_rate:
                 wav = torchaudio.functional.resample(wav, sr, sample_rate)
-            # Ensure mono
-            if wav.shape[0] > 1:
-                wav = wav.mean(dim=0, keepdim=True)
             prompt_latent = vae_encode_fn(wav.unsqueeze(0).to(device))  # (1, T_prompt, D)
         else:
             # Placeholder: create dummy prompt latent for testing
@@ -310,8 +319,6 @@ def inference_long(
             wav, sr = torchaudio.load(prompt_audio_path)
             if sr != sample_rate:
                 wav = torchaudio.functional.resample(wav, sr, sample_rate)
-            if wav.shape[0] > 1:
-                wav = wav.mean(dim=0, keepdim=True)
             prompt_latent = vae_encode_fn(wav.unsqueeze(0).to(device))
         else:
             latent_rate = audio_cfg["latent_rate"]
@@ -443,11 +450,12 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--vocab", type=str, default=None, help="Path to char_vocab.json")
     parser.add_argument("--split", action="store_true", help="Split long text by punctuation")
+    parser.add_argument("--lora", type=str, default=None, help="Path to LoRA adapter directory")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dit, text_encoder, dur_pred, flow, cfg, char_tokenizer = load_checkpoint(
-        args.checkpoint, device, vocab_path_override=args.vocab,
+        args.checkpoint, device, vocab_path_override=args.vocab, lora_path=args.lora,
     )
 
     infer_fn = inference_long if args.split else inference
