@@ -116,29 +116,29 @@ def train_lora(args):
     del ckpt
     torch.cuda.empty_cache()
 
-    # --- Apply LoRA to DiT ---
-    lora_config = LoraConfig(
-        r=lora_cfg["rank"],
-        lora_alpha=lora_cfg["alpha"],
-        target_modules=lora_cfg["target_modules"],
-        lora_dropout=lora_cfg.get("dropout", 0.05),
-        bias="none",
-    )
-    dit = get_peft_model(dit, lora_config)
-    dit.print_trainable_parameters()
-
-    # --- Resume from LoRA checkpoint (Model Weights) ---
+    # --- Apply LoRA to DiT (or resume from checkpoint) ---
     global_step = 0
     state_to_load = None
     if args.resume:
+        # Resume: load LoRA config + weights directly from checkpoint onto base model
         print(f"Resuming LoRA from: {args.resume}")
-        # is_trainable=True is CRITICAL, otherwise from_pretrained freezes the weights
-        dit = PeftModel.from_pretrained(dit.base_model.model, args.resume, is_trainable=True)
+        dit = PeftModel.from_pretrained(dit, args.resume, is_trainable=True)
         if os.path.exists(os.path.join(args.resume, "training_state.pt")):
             state_to_load = torch.load(os.path.join(args.resume, "training_state.pt"), map_location=device)
             global_step = state_to_load.get("global_step", 0)
         print(f"Model resumed. Will resume training from step {global_step}")
         torch.cuda.empty_cache()
+    else:
+        # Fresh start: inject LoRA adapters
+        lora_config = LoraConfig(
+            r=lora_cfg["rank"],
+            lora_alpha=lora_cfg["alpha"],
+            target_modules=lora_cfg["target_modules"],
+            lora_dropout=lora_cfg.get("dropout", 0.05),
+            bias="none",
+        )
+        dit = get_peft_model(dit, lora_config)
+    dit.print_trainable_parameters()
 
     if train_cfg.get("gradient_checkpointing", False):
         dit.base_model.model.enable_gradient_checkpointing()
@@ -200,6 +200,9 @@ def train_lora(args):
     # --- AMP ---
     scaler = GradScaler('cuda', enabled=train_cfg.get("fp16", True))
 
+    # --- Null condition for CFG ---
+    null_text_kv = torch.zeros(1, 1, cfg["model"]["dit_dim"], device=device)
+
     # --- Resume Optimizer/Scaler State ---
     if state_to_load is not None:
         try:
@@ -212,9 +215,6 @@ def train_lora(args):
             scheduler.load_state_dict(state_to_load["scheduler"])
         del state_to_load
         torch.cuda.empty_cache()
-
-    # --- Null condition for CFG ---
-    null_text_kv = torch.zeros(1, 1, cfg["model"]["dit_dim"], device=device)
 
     # --- Training loop ---
     dit.train()
