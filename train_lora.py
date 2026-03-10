@@ -287,7 +287,7 @@ def train_lora(args):
                             output_path = f"outputs_lora/lora_step_{global_step}_{language}.wav"
                             inference(
                                 dit, text_encoder, dur_pred, flow, cfg,
-                                prompt_audio_path="lora_ref_audio.mp3",
+                                prompt_audio_path="/content/F5_like_TTS/lora_ref_audio.wav",
                                 prompt_text="リラックスせんと、眠れんよ?",
                                 tts_text=text,
                                 prompt_language="JA",
