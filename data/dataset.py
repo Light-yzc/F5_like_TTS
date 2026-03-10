@@ -295,11 +295,11 @@ class TTSDatasetLoRA(Dataset):
                 line = line.strip()
                 if not line:
                     continue
-                parts = line.split("_", 2)
-                if len(parts) < 3:
-                    continue
-                speaker, filename, text = parts
-                latent_path = os.path.join(data_root, "wav", filename)
+                parts = line.split("_")
+                # if len(parts) < 3:
+                #     continue
+                filename, text = parts
+                latent_path = os.path.join(data_root, filename)
                 if os.path.exists(latent_path):
                     self.samples.append({
                         "latent_path": latent_path,
@@ -332,7 +332,7 @@ class TTSDatasetLoRA(Dataset):
         ratio = random.uniform(self.prompt_ratio_min, self.prompt_ratio_max)
         split_frame = max(1, min(int(latent.shape[0] * ratio), latent.shape[0] - 1))
         prompt_latent = latent[:split_frame]
-        target_latent = latent[split_frame:]
+        target_latent = latent  # full audio as target
 
         # Split text: prompt is partial, target is FULL text
         split_char = max(1, int(len(text) * ratio))
