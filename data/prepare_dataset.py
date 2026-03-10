@@ -234,15 +234,20 @@ def handle_FGO_audio_and_text(base_dir, processed, vae):
 
 def handle_asmr_text(base_dir, processed_dir, vae):
     file_lists = os.listdir(base_dir)
+    text_line = []
     for file in file_lists:
-        if file.endswith('.wav'):
+        if file.endswith('.flac'):
             audio_path = os.path.join(base_dir, file)
             try:
                 wav, sr = torchaudio.load(audio_path)
                 if sr != 48000:
                     wav = torchaudio.functional.resample(wav, orig_freq=sr, new_freq=48000)
-                wav = torch.clamp(wav, -1.0, 1.0).to(device=vae.device, dtype=vae.dtype).unsqueeze(1).repeat(1, 2, 1)
-                latent = vae_encode(vae, wav)
+                wav = torch.clamp(wav, -1.0, 1.0).to(device=vae.device, dtype=vae.dtype)
+                # (C, samples): mono → duplicate to stereo, stereo → keep
+                if wav.shape[0] == 1:
+                    print('[DEBUG] Mono audio detected, duplicating to stereo')
+                    wav = wav.repeat(2, 1)  # (1, S) → (2, S)
+                latent = vae_encode(vae, wav.unsqueeze(0))  # (1, 2, S) → (1, T, D)
                 latent = latent.squeeze(0).cpu()  # (T, D)
                 torch.save(latent, os.path.join(processed_dir, file.split('.')[0] + '.pt'))
 
@@ -314,7 +319,7 @@ with torch.no_grad():
       elif args.dataset_name == "FGO":
         handle_FGO_audio_and_text(args.base_dir, args.processed_dir, vae)
       elif args.dataset_name == "asmr":
-        handle_asmr_audio_and_text(args.base_dir, args.processed_dir, vae)
+        handle_asmr_text(args.base_dir, args.processed_dir, vae)
       print("Done!")
 
 
