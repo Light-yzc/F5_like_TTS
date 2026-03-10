@@ -194,7 +194,8 @@ def train_lora(args):
     global_step = 0
     if args.resume:
         print(f"Resuming LoRA from: {args.resume}")
-        dit = PeftModel.from_pretrained(dit.base_model.model, args.resume)
+        # is_trainable=True is CRITICAL, otherwise from_pretrained freezes the weights
+        dit = PeftModel.from_pretrained(dit.base_model.model, args.resume, is_trainable=True)
         if os.path.exists(os.path.join(args.resume, "training_state.pt")):
             state = torch.load(os.path.join(args.resume, "training_state.pt"), map_location=device)
             global_step = state.get("global_step", 0)
