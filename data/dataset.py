@@ -266,7 +266,7 @@ class TTSDatasetLoRA(Dataset):
       data_root/
         wav/
           sample1.pt
-        content.txt   — lines like "speaker_filename.pt_text"
+        content.txt   — lines like "filename.pt_text"
     """
 
     def __init__(
@@ -295,9 +295,10 @@ class TTSDatasetLoRA(Dataset):
                 line = line.strip()
                 if not line:
                     continue
-                parts = line.split("_")
-                # if len(parts) < 3:
-                #     continue
+                # split only on first underscore — text may contain underscores
+                parts = line.split("_", 1)
+                if len(parts) < 2:
+                    continue
                 filename, text = parts
                 latent_path = os.path.join(data_root, filename)
                 if os.path.exists(latent_path):
@@ -315,15 +316,22 @@ class TTSDatasetLoRA(Dataset):
         latent = torch.load(path, map_location="cpu", weights_only=True)
         if latent.dim() == 3:
             latent = latent.mean(dim=0)
-        if latent.shape[0] > self.max_frames:
-            start = random.randint(0, latent.shape[0] - self.max_frames)
-            latent = latent[start : start + self.max_frames]
         return latent
 
     def __getitem__(self, idx: int) -> dict:
         sample = self.samples[idx]
         latent = self._load_latent(sample["latent_path"])
         text = sample["text"]
+
+        # If audio exceeds max_frames, randomly crop BOTH audio and text
+        if latent.shape[0] > self.max_frames:
+            total_frames = latent.shape[0]
+            start = random.randint(0, total_frames - self.max_frames)
+            end = start + self.max_frames
+            text_start = int(len(text) * start / total_frames)
+            text_end = int(len(text) * end / total_frames)
+            text = text[text_start:text_end] if text_end > text_start else text
+            latent = latent[start:end]
 
         if latent.shape[0] < self.min_frames:
             latent = F.pad(latent, (0, 0, 0, self.min_frames - latent.shape[0]))
