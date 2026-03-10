@@ -127,6 +127,19 @@ def train_lora(args):
     dit = get_peft_model(dit, lora_config)
     dit.print_trainable_parameters()
 
+    # --- Resume from LoRA checkpoint (Model Weights) ---
+    global_step = 0
+    state_to_load = None
+    if args.resume:
+        print(f"Resuming LoRA from: {args.resume}")
+        # is_trainable=True is CRITICAL, otherwise from_pretrained freezes the weights
+        dit = PeftModel.from_pretrained(dit.base_model.model, args.resume, is_trainable=True)
+        if os.path.exists(os.path.join(args.resume, "training_state.pt")):
+            state_to_load = torch.load(os.path.join(args.resume, "training_state.pt"), map_location=device)
+            global_step = state_to_load.get("global_step", 0)
+        print(f"Model resumed. Will resume training from step {global_step}")
+        torch.cuda.empty_cache()
+
     if train_cfg.get("gradient_checkpointing", False):
         dit.base_model.model.enable_gradient_checkpointing()
         print("Gradient checkpointing enabled")
@@ -187,27 +200,21 @@ def train_lora(args):
     # --- AMP ---
     scaler = GradScaler('cuda', enabled=train_cfg.get("fp16", True))
 
+    # --- Resume Optimizer/Scaler State ---
+    if state_to_load is not None:
+        try:
+            optimizer.load_state_dict(state_to_load["optimizer"])
+        except Exception as e:
+            print(f"WARNING: Could not load optimizer state: {e}")
+        if "scaler" in state_to_load:
+            scaler.load_state_dict(state_to_load["scaler"])
+        if "scheduler" in state_to_load:
+            scheduler.load_state_dict(state_to_load["scheduler"])
+        del state_to_load
+        torch.cuda.empty_cache()
+
     # --- Null condition for CFG ---
     null_text_kv = torch.zeros(1, 1, cfg["model"]["dit_dim"], device=device)
-
-    # --- Resume from LoRA checkpoint ---
-    global_step = 0
-    if args.resume:
-        print(f"Resuming LoRA from: {args.resume}")
-        # is_trainable=True is CRITICAL, otherwise from_pretrained freezes the weights
-        dit = PeftModel.from_pretrained(dit.base_model.model, args.resume, is_trainable=True)
-        if os.path.exists(os.path.join(args.resume, "training_state.pt")):
-            state = torch.load(os.path.join(args.resume, "training_state.pt"), map_location=device)
-            global_step = state.get("global_step", 0)
-            try:
-                optimizer.load_state_dict(state["optimizer"])
-            except Exception as e:
-                print(f"WARNING: Could not load optimizer state: {e}")
-            if "scaler" in state:
-                scaler.load_state_dict(state["scaler"])
-            del state
-        print(f"Resumed at step {global_step}")
-        torch.cuda.empty_cache()
 
     # --- Training loop ---
     dit.train()
