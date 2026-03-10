@@ -235,28 +235,28 @@ def handle_FGO_audio_and_text(base_dir, processed, vae):
 def handle_asmr_text(base_dir, processed_dir, vae):
     file_lists = os.listdir(base_dir)
     text_line = []
-    for file in file_lists:
-        if file.endswith('.flac'):
-            audio_path = os.path.join(base_dir, file)
-            try:
-                wav, sr = torchaudio.load(audio_path)
-                if sr != 48000:
-                    wav = torchaudio.functional.resample(wav, orig_freq=sr, new_freq=48000)
-                wav = torch.clamp(wav, -1.0, 1.0).to(device=vae.device, dtype=vae.dtype)
-                # (C, samples): mono → duplicate to stereo, stereo → keep
-                if wav.shape[0] == 1:
-                    print('[DEBUG] Mono audio detected, duplicating to stereo')
-                    wav = wav.repeat(2, 1)  # (1, S) → (2, S)
-                latent = vae_encode(vae, wav.unsqueeze(0))  # (1, 2, S) → (1, T, D)
-                latent = latent.squeeze(0).cpu()  # (T, D)
-                torch.save(latent, os.path.join(processed_dir, file.split('.')[0] + '.pt'))
+    flac_files = [f for f in file_lists if f.endswith('.flac')]
+    for file in tqdm(flac_files, desc="Processing ASMR audio"):
+        audio_path = os.path.join(base_dir, file)
+        try:
+            wav, sr = torchaudio.load(audio_path)
+            if sr != 48000:
+                wav = torchaudio.functional.resample(wav, orig_freq=sr, new_freq=48000)
+            wav = torch.clamp(wav, -1.0, 1.0).to(device=vae.device, dtype=vae.dtype)
+            # (C, samples): mono → duplicate to stereo, stereo → keep
+            if wav.shape[0] == 1:
+                print('[DEBUG] Mono audio detected, duplicating to stereo')
+                wav = wav.repeat(2, 1)  # (1, S) → (2, S)
+            latent = vae_encode(vae, wav.unsqueeze(0))  # (1, 2, S) → (1, T, D)
+            latent = latent.squeeze(0).cpu()  # (T, D)
+            torch.save(latent, os.path.join(processed_dir, file.split('.')[0] + '.pt'))
 
-                text_file = file.split('.')[0] + '.txt'
-                with open(os.path.join(base_dir, text_file), 'r', encoding='utf-8') as f:
-                    text = f.read().strip()
-                text_line.append(f"{file.split('.')[0]}.pt_{text}\n")
-            except Exception as e:
-                print(f"Skipping {file}: {e}")
+            text_file = file.split('.')[0] + '.txt'
+            with open(os.path.join(base_dir, text_file), 'r', encoding='utf-8') as f:
+                text = f.read().strip()
+            text_line.append(f"{file.split('.')[0]}.pt_{text}\n")
+        except Exception as e:
+            print(f"Skipping {file}: {e}")
 
     with open(os.path.join(processed_dir, 'content.txt'), 'w', encoding='utf-8') as fout:
         fout.writelines(text_line)
