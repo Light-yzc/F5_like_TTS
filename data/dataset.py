@@ -335,12 +335,12 @@ class TTSDatasetLoRA(Dataset):
         ratio = random.uniform(self.prompt_ratio_min, self.prompt_ratio_max)
         split_frame = max(1, min(int(latent.shape[0] * ratio), latent.shape[0] - 1))
         prompt_latent = latent[:split_frame]
-        target_latent = latent  # full audio as target
+        target_latent = latent[split_frame:]  # no overlap with prompt
 
-        # Split text: prompt is partial, target is FULL text
+        # Split text by same ratio (no overlap)
         split_char = max(1, int(len(text) * ratio))
         prompt_text = text[:split_char]
-        target_text = text  # full text as target
+        target_text = text[split_char:]
 
         lang = self.language
         mapped_prompt = text_to_phonemes(prompt_text, lang)
