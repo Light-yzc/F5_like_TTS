@@ -263,8 +263,8 @@ def train(args):
                 dur_loss = dur_pred.loss(text_kv.detach(), attention_mask, target_frames, target_text_mask)
 
                 # Duration weight decays linearly: 0.1 → 0.05 over steps 24k~65k
-                dur_decay_start, dur_decay_end = 24000, 65000
-                dur_weight_start, dur_weight_end = 0.1, 0.05
+                dur_decay_start, dur_decay_end = 24000, 6500000
+                dur_weight_start, dur_weight_end = 1, 0.99
                 if global_step < dur_decay_start:
                     dur_weight = dur_weight_start
                 elif global_step > dur_decay_end:
