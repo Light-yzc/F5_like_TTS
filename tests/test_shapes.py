@@ -16,6 +16,10 @@ import torch
 import torch.nn.functional as F
 from models.dit import DiT, DiTBlock, RMSNorm, TimestepEmbedding, RotaryEmbedding
 from models.duration_predictor import DurationPredictor
+from models.duration_discriminator import DurationDiscriminator
+from models.latent_discriminator import (
+    MultiScaleLatentDiscriminator, hinge_d_loss, hinge_g_loss, feature_matching_loss,
+)
 from models.flow_matching import FlowMatching
 
 
@@ -120,19 +124,83 @@ def test_dit_backward():
 
 
 def test_duration_predictor():
-    dp = DurationPredictor(text_dim=128, hidden_dim=64, num_layers=1, nhead=4)
+    dp = DurationPredictor(text_dim=128, hidden_dim=64, num_layers=1, nhead=4, noise_dim=32)
     text_feat = torch.randn(2, 15, 128)
     text_mask = torch.ones(2, 15)
 
-    pred = dp(text_feat, text_mask)
-    assert pred.shape == (2,), f"DurationPredictor shape mismatch: {pred.shape}"
-    assert (pred > 0).all(), "DurationPredictor output should be positive"
+    # Test log-domain output
+    log_dur = dp(text_feat, text_mask)
+    assert log_dur.shape == (2,), f"DurationPredictor shape mismatch: {log_dur.shape}"
 
-    # Test loss
+    # Test with noise
+    noise = torch.randn(2, 32)
+    log_dur_noisy = dp(text_feat, text_mask, noise=noise)
+    assert log_dur_noisy.shape == (2,), f"Noisy output shape mismatch: {log_dur_noisy.shape}"
+
+    # Test predict_frames (should be positive after exp)
+    frames = dp.predict_frames(text_feat, text_mask)
+    assert (frames > 0).all(), f"predict_frames should be positive, got {frames}"
+
+    # Test loss (log-domain MSE)
     gt_frames = torch.tensor([100.0, 75.0])
-    loss = dp.loss(text_feat, text_mask, gt_frames)
+    loss = dp.loss(text_feat, text_mask, gt_frames, noise=noise)
     loss.backward()
-    print(f"✓ DurationPredictor (pred={pred.detach().tolist()}, loss={loss.item():.4f})")
+    print(f"✓ DurationPredictor (log_dur={log_dur.detach().tolist()}, frames={frames.detach().tolist()}, loss={loss.item():.4f})")
+
+
+def test_duration_discriminator():
+    disc = DurationDiscriminator(text_dim=128, hidden_dim=64, num_layers=2)
+    text_feat = torch.randn(2, 15, 128)
+    text_mask = torch.ones(2, 15)
+    log_duration = torch.tensor([4.5, 3.8])  # log(frames+1)
+
+    logit = disc(text_feat, text_mask, log_duration)
+    assert logit.shape == (2,), f"Discriminator output shape mismatch: {logit.shape}"
+
+    # Test backward
+    loss = F.binary_cross_entropy_with_logits(logit, torch.ones(2))
+    loss.backward()
+    has_grad = sum(1 for p in disc.parameters() if p.grad is not None)
+    assert has_grad > 0, "No gradients in discriminator"
+    print(f"✓ DurationDiscriminator (logit={logit.detach().tolist()}, loss={loss.item():.4f})")
+
+
+def test_duration_gan_step():
+    """Test a full GAN training step: D update + G adversarial loss."""
+    dp = DurationPredictor(text_dim=128, hidden_dim=64, num_layers=1, nhead=4, noise_dim=32)
+    disc = DurationDiscriminator(text_dim=128, hidden_dim=64, num_layers=2)
+
+    text_feat = torch.randn(2, 15, 128)
+    text_mask = torch.ones(2, 15)
+    gt_frames = torch.tensor([100.0, 75.0])
+    noise = torch.randn(2, 32)
+
+    # Forward
+    log_pred = dp(text_feat, text_mask, noise=noise)
+    log_real = torch.log(gt_frames + 1)
+
+    # Discriminator step
+    d_real = disc(text_feat, text_mask, log_real)
+    d_fake = disc(text_feat, text_mask, log_pred.detach())
+    d_loss = (
+        F.binary_cross_entropy_with_logits(d_real, torch.ones_like(d_real))
+        + F.binary_cross_entropy_with_logits(d_fake, torch.zeros_like(d_fake))
+    )
+    d_loss.backward()
+
+    # Generator adversarial step
+    g_fake = disc(text_feat, text_mask, log_pred)
+    g_adv = F.binary_cross_entropy_with_logits(g_fake, torch.ones_like(g_fake))
+    dur_mse = F.mse_loss(log_pred, log_real)
+    g_loss = dur_mse + 0.1 * g_adv
+    g_loss.backward()
+
+    # Both should have gradients
+    dp_grads = sum(1 for p in dp.parameters() if p.grad is not None)
+    disc_grads = sum(1 for p in disc.parameters() if p.grad is not None)
+    assert dp_grads > 0, "No gradients in duration predictor"
+    assert disc_grads > 0, "No gradients in discriminator"
+    print(f"✓ DurationGAN step (d_loss={d_loss.item():.4f}, g_loss={g_loss.item():.4f})")
 
 
 def test_flow_matching_loss():
@@ -195,7 +263,7 @@ def test_end_to_end_pipeline():
               head_dim=64, ff_mult=2.0)
     dit.eval()
     flow = FlowMatching(default_infer_steps=3, default_cfg_scale=2.0)
-    dur_pred = DurationPredictor(text_dim=dit_dim, hidden_dim=64, num_layers=1, nhead=4)
+    dur_pred = DurationPredictor(text_dim=dit_dim, hidden_dim=64, num_layers=1, nhead=4, noise_dim=32)
 
     # Simulate text encoder output
     text_kv = torch.randn(1, 10, dit_dim)
@@ -207,7 +275,7 @@ def test_end_to_end_pipeline():
     prompt_latent = torch.randn(1, 75, latent_dim)
 
     # Predict duration
-    T_gen = int(dur_pred(text_kv, text_mask).item())
+    T_gen = int(dur_pred.predict_frames(text_kv, text_mask).item())
     T_gen = max(25, T_gen)  # At least 1 second
 
     # Generate
@@ -385,6 +453,79 @@ def test_flow_matching_with_ap():
     print("✓ FlowMatching.compute_loss with ap_layer_idx")
 
 
+def test_flow_matching_returns_x0_hat():
+    dit = DiT(latent_dim=16, dit_dim=128, depth=2, heads=2, head_dim=64, ff_mult=2.0)
+    flow = FlowMatching(cfg_dropout_rate=0.5)
+
+    B, T_prompt, T_target = 2, 10, 20
+    T_total = T_prompt + T_target
+
+    latent = torch.randn(B, T_total, 16)
+    prompt_mask = torch.zeros(B, T_total)
+    target_mask = torch.zeros(B, T_total)
+    padding_mask = torch.ones(B, T_total)
+    prompt_mask[:, :T_prompt] = 1.0
+    target_mask[:, T_prompt:] = 1.0
+
+    text_kv = torch.randn(B, 8, 128)
+    text_mask = torch.ones(B, 8)
+    null_kv = torch.zeros(B, 1, 128)
+
+    losses = flow.compute_loss(
+        dit, latent, prompt_mask, target_mask,
+        text_kv, text_mask, null_kv,
+        padding_mask=padding_mask,
+    )
+    assert "x_0_hat" in losses, "Missing x_0_hat"
+    assert "x_0_real" in losses, "Missing x_0_real"
+    assert "t" in losses, "Missing t"
+    assert losses["x_0_hat"].shape == (B, T_total, 16)
+    assert losses["x_0_real"].shape == (B, T_total, 16)
+    assert losses["t"].shape == (B,)
+    print("✓ FlowMatching returns x_0_hat, x_0_real, t")
+
+
+def test_latent_discriminator():
+    disc = MultiScaleLatentDiscriminator(latent_dim=16, hidden_dim=64, num_scales=3)
+    x = torch.randn(2, 30, 16)  # (B, T, D)
+    mask = torch.ones(2, 30)
+
+    logits, fmaps = disc(x, mask)
+    assert len(logits) == 3, f"Expected 3 scales, got {len(logits)}"
+    assert len(fmaps) == 3, f"Expected 3 fmap lists, got {len(fmaps)}"
+    for i, logit in enumerate(logits):
+        assert logit.shape[0] == 2 and logit.shape[1] == 1, f"Scale {i} logit shape: {logit.shape}"
+    print(f"✓ MultiScaleLatentDiscriminator (scales={len(logits)}, logit_shapes={[l.shape for l in logits]})")
+
+
+def test_latent_gan_step():
+    """Test full latent GAN step: D hinge loss + G adversarial + feature matching."""
+    disc = MultiScaleLatentDiscriminator(latent_dim=16, hidden_dim=64, num_scales=2)
+    x_real = torch.randn(2, 30, 16)
+    x_fake = torch.randn(2, 30, 16)
+    mask = torch.ones(2, 30)
+
+    # D step
+    d_real_logits, d_real_fmaps = disc(x_real, mask)
+    d_fake_logits, d_fake_fmaps = disc(x_fake.detach(), mask)
+    d_loss = hinge_d_loss(d_real_logits, d_fake_logits)
+    d_loss.backward()
+
+    # G step
+    disc.zero_grad()
+    g_logits, g_fmaps = disc(x_fake, mask)
+    g_adv = hinge_g_loss(g_logits)
+    with torch.no_grad():
+        _, real_fmaps_ref = disc(x_real, mask)
+    g_fm = feature_matching_loss(real_fmaps_ref, g_fmaps)
+    g_loss = 0.1 * g_adv + 2.0 * g_fm
+    g_loss.backward()
+
+    assert not torch.isnan(d_loss), "D loss is NaN"
+    assert not torch.isnan(g_loss), "G loss is NaN"
+    print(f"✓ LatentGAN step (d_loss={d_loss.item():.4f}, g_adv={g_adv.item():.4f}, g_fm={g_fm.item():.4f})")
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("VAE-DiT TTS — Shape Verification Tests")
@@ -397,6 +538,8 @@ if __name__ == "__main__":
     test_dit_full()
     test_dit_backward()
     test_duration_predictor()
+    test_duration_discriminator()
+    test_duration_gan_step()
     test_flow_matching_loss()
     test_flow_matching_sample()
     test_end_to_end_pipeline()
@@ -415,6 +558,13 @@ if __name__ == "__main__":
     test_attention_prior_loss()
     test_dit_attn_weights()
     test_flow_matching_with_ap()
+
+    print("-" * 60)
+    print("Latent GAN Tests")
+    print("-" * 60)
+    test_flow_matching_returns_x0_hat()
+    test_latent_discriminator()
+    test_latent_gan_step()
 
     print("=" * 60)
     print("All tests passed! ✓")

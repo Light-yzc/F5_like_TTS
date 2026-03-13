@@ -24,7 +24,17 @@ model:
   duration_num_layers: 4
   duration_nhead: 8
   duration_conv_blocks: 3
-  duration_conv_kernel: 7
+  duration_conv_kernel: 13
+  duration_noise_dim: 64              # Stochastic noise dim (VITS2-style)
+  duration_disc_hidden: 256           # Discriminator hidden dim
+  duration_adv_weight: 0.1            # Adversarial loss weight
+
+  # Latent GAN (Multi-Scale Discriminator on flow matching output)
+  latent_disc_hidden: 256
+  latent_disc_scales: 3               # Number of temporal scales (1x, 2x, 4x)
+  latent_adv_weight: 0.1              # Adversarial loss weight
+  latent_fm_weight: 2.0               # Feature matching loss weight
+  latent_gan_t_threshold: 0.5         # Only apply GAN when t > threshold
 
   # Flow Matching
   cfg_dropout_rate: 0.15

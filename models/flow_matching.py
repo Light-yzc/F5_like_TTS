@@ -137,9 +137,16 @@ class FlowMatching:
         num_target_elements = target_mask.sum() * D  # total valid elements
         loss = masked_error.sum() / (num_target_elements + 1e-8)
 
+        # Single-step denoising estimate: x_0_hat = x_t - t * v_pred
+        # (used by latent GAN discriminator, only meaningful for large t)
+        x_0_hat = x_t - t_ * v_pred
+
         result = {
             "loss": loss,
             "mse": loss.detach(),
+            "x_0_hat": x_0_hat,
+            "x_0_real": latent,
+            "t": t,
         }
 
         if return_hidden:

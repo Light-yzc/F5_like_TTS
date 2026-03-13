@@ -1,18 +1,17 @@
 """
-Duration Predictor for VAE-DiT TTS.
+Duration Predictor for VAE-DiT TTS (VITS2-style upgrade).
 
 Predicts the number of latent frames to generate given text features.
 
-Architecture (upgraded):
+Architecture:
   - 1D ConvNeXt blocks for local pattern extraction (syllable rhythm)
   - Transformer encoder layers for global context (sentence prosody)
-  - Multi-scale pooling → deeper MLP → scalar output
+  - Multi-scale pooling → deeper MLP → log-domain scalar output
 
-Why ConvNeXt + Transformer?
-  - Duration depends on BOTH local patterns (word-level speaking rate)
-    and global context (sentence-level prosody, pauses).
-  - Conv captures "this word is typically 3 syllables long" efficiently.
-  - Transformer captures "this is a question so the final word is longer."
+VITS2 tricks applied:
+  - Log-domain prediction: predict log(frames+1) instead of raw frames
+  - Stochastic noise input: allows modeling duration distribution p(dur|text)
+  - Compatible with adversarial training via external DurationDiscriminator
 """
 
 import torch
@@ -49,12 +48,18 @@ class DurationPredictor(nn.Module):
     Architecture:
       1. ConvNeXt blocks for local rhythm patterns
       2. Transformer layers for global prosody context
-      3. Multi-scale pooling (mean + max + attention) → MLP → scalar
+      3. Multi-scale pooling (mean + max + attention) → MLP → log-domain scalar
+
+    VITS2-style upgrades:
+      - Log-domain output: predicts log(frames+1), more stable for varying lengths
+      - Stochastic noise input: models duration distribution, not just mean
+      - Exposes pooled features for external discriminator
 
     Config params (from yaml):
       - text_dim:    input feature dim (= dit_dim, from text encoder)
       - hidden_dim:  internal dim for MLP and conv blocks
       - num_layers:  number of transformer layers
+      - noise_dim:   dimension of stochastic noise input (0 = deterministic)
     """
 
     def __init__(
@@ -66,12 +71,23 @@ class DurationPredictor(nn.Module):
         num_conv_blocks: int = 3,
         conv_kernel: int = 7,
         latent_rate: int = 25,
+        noise_dim: int = 64,
     ):
         super().__init__()
         self.latent_rate = latent_rate
+        self.noise_dim = noise_dim
 
         # ── Project text features to hidden_dim ──
         self.proj_in = nn.Linear(text_dim, hidden_dim)
+
+        # ── Stochastic noise projection (VITS2-style) ──
+        if noise_dim > 0:
+            self.noise_proj = nn.Sequential(
+                nn.Linear(noise_dim, hidden_dim),
+                nn.SiLU(),
+            )
+        else:
+            self.noise_proj = None
 
         # ── ConvNeXt blocks for local rhythm ──
         self.conv_blocks = nn.ModuleList([
@@ -98,7 +114,7 @@ class DurationPredictor(nn.Module):
         # Combine: attn_pool + mean_pool + max_pool → 3 * hidden_dim
         pool_dim = hidden_dim * 3
 
-        # ── Prediction head (deeper MLP) ──
+        # ── Prediction head (deeper MLP, log-domain output) ──
         self.head = nn.Sequential(
             nn.Linear(pool_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
@@ -114,26 +130,29 @@ class DurationPredictor(nn.Module):
         text_features: torch.Tensor,
         text_mask: torch.Tensor,
         target_text_mask: torch.Tensor = None,
+        noise: torch.Tensor = None,
     ) -> torch.Tensor:
         """
         Args:
             text_features: (B, L, D) — text encoder output
             text_mask:     (B, L)    — 1=valid, 0=pad
             target_text_mask: (B, L) - 1=target text, 0=prompt or pad (optional)
+            noise:         (B, noise_dim) — stochastic noise (optional, for training)
 
         Returns:
-            predicted_frames: (B,) — predicted number of latent frames (float)
+            log_dur: (B,) — predicted log(frames+1) in log-domain
         """
-        # print('///////////')
-        # print('text_features')
-        # print(text_features)
-        # print("text_mask")
-        # print(text_mask)
         # If no target mask is provided, fallback to the standard mask
         if target_text_mask is None:
             target_text_mask = text_mask
+
         # Project to hidden dim
         x = self.proj_in(text_features)  # (B, L, hidden_dim)
+
+        # Add stochastic noise (broadcast to all token positions)
+        if noise is not None and self.noise_proj is not None:
+            noise_emb = self.noise_proj(noise)  # (B, hidden_dim)
+            x = x + noise_emb.unsqueeze(1)  # (B, L, hidden_dim)
 
         # ConvNeXt blocks (need channel-first)
         mask_bool = text_mask.bool()
@@ -154,14 +173,12 @@ class DurationPredictor(nn.Module):
         # Use target_text_mask so it only pools target features
         pool_mask_bool = target_text_mask.bool()
 
-        # print("target_text_mask")
-        # print(target_text_mask)
         # 1. Attention pooling
         weights = self.pool_weight(x).squeeze(-1)  # (B, L)
         weights = weights.masked_fill(~pool_mask_bool, float("-inf"))
         weights = F.softmax(weights, dim=-1)  # (B, L)
         # Handle case where entire sequence is padded out (nan prevention)
-        weights = torch.nan_to_num(weights, 0.0) 
+        weights = torch.nan_to_num(weights, 0.0)
         attn_pool = (x * weights.unsqueeze(-1)).sum(dim=1)  # (B, D)
 
         # 2. Mean pooling (masked)
@@ -178,18 +195,44 @@ class DurationPredictor(nn.Module):
         # Concatenate all pooling results
         pooled = torch.cat([attn_pool, mean_pool, max_pool], dim=-1)  # (B, 3*D)
 
-        # Predict frame count (always positive)
-        predicted = self.head(pooled).squeeze(-1)  # (B,)
-        return F.softplus(predicted)
+        # Log-domain output (no softplus, raw prediction of log(frames+1))
+        log_dur = self.head(pooled).squeeze(-1)  # (B,)
+        return log_dur
+
+    def predict_frames(
+        self,
+        text_features: torch.Tensor,
+        text_mask: torch.Tensor,
+        target_text_mask: torch.Tensor = None,
+        noise_scale: float = 0.0,
+    ) -> torch.Tensor:
+        """
+        Predict duration in frames (for inference).
+
+        Args:
+            noise_scale: 0.0 = deterministic, >0 = stochastic rhythm variation
+        """
+        noise = None
+        if noise_scale > 0 and self.noise_proj is not None:
+            noise = torch.randn(
+                text_features.shape[0], self.noise_dim,
+                device=text_features.device, dtype=text_features.dtype,
+            ) * noise_scale
+
+        log_dur = self.forward(text_features, text_mask, target_text_mask, noise)
+        # Convert log-domain → frame count
+        frames = torch.exp(log_dur) - 1
+        return frames.clamp(min=1)
 
     def predict_duration_sec(
         self,
         text_features: torch.Tensor,
         text_mask: torch.Tensor,
         target_text_mask: torch.Tensor = None,
+        noise_scale: float = 0.0,
     ) -> torch.Tensor:
         """Predict duration in seconds."""
-        frames = self.forward(text_features, text_mask, target_text_mask)
+        frames = self.predict_frames(text_features, text_mask, target_text_mask, noise_scale)
         return frames / self.latent_rate
 
     def loss(
@@ -198,7 +241,9 @@ class DurationPredictor(nn.Module):
         text_mask: torch.Tensor,
         target_frames: torch.Tensor,
         target_text_mask: torch.Tensor = None,
+        noise: torch.Tensor = None,
     ) -> torch.Tensor:
-        """MSE loss between predicted and GT frame count."""
-        pred = self.forward(text_features, text_mask, target_text_mask)
-        return F.mse_loss(pred, target_frames.float())
+        """Log-domain MSE loss between predicted and GT frame count."""
+        log_pred = self.forward(text_features, text_mask, target_text_mask, noise)
+        log_target = torch.log(target_frames.float().clamp(min=1) + 1)
+        return F.mse_loss(log_pred, log_target)

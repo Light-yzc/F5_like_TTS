@@ -126,6 +126,7 @@ def load_checkpoint(ckpt_path: str, device: torch.device, vocab_path_override: s
         num_conv_blocks=model_cfg.get("duration_conv_blocks", 3),
         conv_kernel=model_cfg.get("duration_conv_kernel", 7),
         latent_rate=cfg["audio"]["latent_rate"],
+        noise_dim=model_cfg.get("duration_noise_dim", 64),
     ).to(device)
     dur_pred.load_state_dict(ckpt["dur_pred"], strict=False)
     dur_pred.eval()
@@ -222,8 +223,7 @@ def inference(
         if duration is not None:
             T_gen = int(duration * latent_rate)
         else:
-            # Use duration predictor
-            T_gen = int(dur_pred(text_kv, attention_mask, target_text_mask).item())
+            T_gen = int(dur_pred.predict_frames(text_kv, attention_mask, target_text_mask).item())
             T_gen = max(latent_rate, T_gen)  # At least 1 second
             print(f"Predicted duration: {T_gen / latent_rate:.2f}s ({T_gen} frames)")
 
@@ -413,7 +413,7 @@ def _inference_core(
         if duration is not None:
             T_gen = int(duration * latent_rate)
         else:
-            T_gen = int(dur_pred(text_kv, attention_mask, target_text_mask).item())
+            T_gen = int(dur_pred.predict_frames(text_kv, attention_mask, target_text_mask).item())
             T_gen = max(latent_rate, T_gen)
             print(f"Predicted duration: {T_gen / latent_rate:.2f}s ({T_gen} frames)")
 
