@@ -5,10 +5,7 @@ Conditions on text encoder hidden states and judges whether the
 given duration is real (from dataset) or predicted (from DurationPredictor).
 
 Architecture:
-  - Input: text_features (B, L, text_dim) + log_duration (B,) scalar
-  - Duration broadcast to all token positions → concat with text
-  - Conv1d processing with Spectral Normalization
-  - Masked mean pooling → MLP classifier → real/fake logit
+  - Input: text_features (B, L, text_dim) + duration (B,) scalar
 """
 
 import torch
@@ -69,13 +66,13 @@ class DurationDiscriminator(nn.Module):
         self,
         text_features: torch.Tensor,
         text_mask: torch.Tensor,
-        log_duration: torch.Tensor,
+        duration: torch.Tensor,
     ) -> torch.Tensor:
         """
         Args:
             text_features: (B, L, text_dim) — text encoder output
             text_mask:     (B, L)           — 1=valid, 0=pad
-            log_duration:  (B,)             — log-domain duration value
+            duration:      (B,)             — actual duration value
 
         Returns:
             logit: (B,) — discriminator logit (before sigmoid)
@@ -83,7 +80,7 @@ class DurationDiscriminator(nn.Module):
         B, L, D = text_features.shape
 
         # Broadcast duration to all token positions
-        dur_expanded = log_duration.view(B, 1, 1).expand(B, L, 1)
+        dur_expanded = duration.view(B, 1, 1).expand(B, L, 1)
 
         # Concat text features + duration
         x = torch.cat([text_features, dur_expanded], dim=-1)  # (B, L, D+1)

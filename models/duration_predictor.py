@@ -195,9 +195,9 @@ class DurationPredictor(nn.Module):
         # Concatenate all pooling results
         pooled = torch.cat([attn_pool, mean_pool, max_pool], dim=-1)  # (B, 3*D)
 
-        # Log-domain output (no softplus, raw prediction of log(frames+1))
-        log_dur = self.head(pooled).squeeze(-1)  # (B,)
-        return log_dur
+        # Raw frame prediction (use softplus to avoid negative frames)
+        dur = self.head(pooled).squeeze(-1)  # (B,)
+        return F.softplus(dur)
 
     def predict_frames(
         self,
@@ -219,10 +219,8 @@ class DurationPredictor(nn.Module):
                 device=text_features.device, dtype=text_features.dtype,
             ) * noise_scale
 
-        log_dur = self.forward(text_features, text_mask, target_text_mask, noise)
-        # Convert log-domain → frame count
-        frames = torch.exp(log_dur) - 1
-        return frames.clamp(min=1)
+        dur = self.forward(text_features, text_mask, target_text_mask, noise)
+        return dur.clamp(min=1)
 
     def predict_duration_sec(
         self,
@@ -243,7 +241,5 @@ class DurationPredictor(nn.Module):
         target_text_mask: torch.Tensor = None,
         noise: torch.Tensor = None,
     ) -> torch.Tensor:
-        """Log-domain MSE loss between predicted and GT frame count."""
-        log_pred = self.forward(text_features, text_mask, target_text_mask, noise)
-        log_target = torch.log(target_frames.float().clamp(min=1) + 1)
-        return F.mse_loss(log_pred, log_target)
+        dur_pred = self.forward(text_features, text_mask, target_text_mask, noise)
+        return F.mse_loss(dur_pred, target_frames.float())

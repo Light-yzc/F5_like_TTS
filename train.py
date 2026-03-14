@@ -337,23 +337,23 @@ def train(args):
                 dur_noise = torch.randn(B_cur, dur_noise_dim, device=device)
                 text_kv_det = text_kv.detach()
 
-                # Duration predictor forward (log-domain output)
-                log_dur_pred = dur_pred(
+                # Duration predictor forward
+                dur_pred_out = dur_pred(
                     text_kv_det, attention_mask, target_text_mask, noise=dur_noise,
                 )
-                log_dur_real = torch.log(target_frames.float().clamp(min=1) + 1)
+                dur_real = target_frames.float()
 
-                # Duration MSE loss (log-domain)
-                dur_mse_loss = F.mse_loss(log_dur_pred, log_dur_real)
+                # Duration MSE loss
+                dur_mse_loss = F.mse_loss(dur_pred_out, dur_real)
 
-                # Duration weight: fixed 0.65 (DiT already converged)
-                dur_weight = 0.65
+                # Duration weight: decreased because raw frames MSE is much larger than log space
+                dur_weight = 1e-3
 
             # ── Train Duration Discriminator ──
             disc_optimizer.zero_grad()
             with autocast('cuda', enabled=train_cfg.get("fp16", True)):
-                d_real = dur_disc(text_kv_det, attention_mask, log_dur_real)
-                d_fake = dur_disc(text_kv_det, attention_mask, log_dur_pred.detach())
+                d_real = dur_disc(text_kv_det, attention_mask, dur_real)
+                d_fake = dur_disc(text_kv_det, attention_mask, dur_pred_out.detach())
                 d_loss = (
                     F.relu(1.0 - d_real).mean()
                     + F.relu(1.0 + d_fake).mean()
@@ -365,7 +365,7 @@ def train(args):
 
             # ── Generator adversarial loss (dur_pred wants to fool discriminator) ──
             with autocast('cuda', enabled=train_cfg.get("fp16", True)):
-                g_fake = dur_disc(text_kv_det, attention_mask, log_dur_pred)
+                g_fake = dur_disc(text_kv_det, attention_mask, dur_pred_out)
                 dur_adv_loss = -g_fake.mean()
 
                 # Combined duration loss
