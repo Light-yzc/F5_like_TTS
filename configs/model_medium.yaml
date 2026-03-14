@@ -32,9 +32,9 @@ model:
   # Latent GAN (Multi-Scale Discriminator on flow matching output)
   latent_disc_hidden: 256
   latent_disc_scales: 3               # Number of temporal scales (1x, 2x, 4x)
-  latent_adv_weight: 0.1              # Adversarial loss weight
-  latent_fm_weight: 2.0               # Feature matching loss weight
-  latent_gan_t_threshold: 0.5         # Only apply GAN when t > threshold
+  latent_adv_weight: 0.02             # Adversarial loss weight (decreased for stability)
+  latent_fm_weight: 0.5               # Feature matching loss weight (decreased for stability)
+  latent_gan_t_threshold: 0.3         # Only apply GAN when t < threshold (near real data)
 
   # Flow Matching
   cfg_dropout_rate: 0.15

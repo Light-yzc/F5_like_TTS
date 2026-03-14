@@ -397,9 +397,9 @@ def train(args):
 
                 loss = fm_losses["loss"] + dur_weight * dur_loss + ctc_weight * ctc_loss
 
-            # ── Train Latent Discriminator (only when t > threshold) ──
+            # ── Train Latent Discriminator (only when t < threshold, i.e., near clean data) ──
             latent_t = fm_losses["t"]
-            gan_mask = latent_t > latent_gan_t_threshold
+            gan_mask = latent_t < latent_gan_t_threshold
             latent_d_loss = torch.tensor(0.0, device=device)
             latent_g_adv = torch.tensor(0.0, device=device)
             latent_g_fm = torch.tensor(0.0, device=device)
