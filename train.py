@@ -5,6 +5,12 @@ Usage:
     python train.py --config configs/model_medium.yaml --data_root data/processed/
 """
 
+import warnings
+import logging
+# Suppress phonemizer's flood of "words count mismatch" warnings
+warnings.filterwarnings("ignore", module="phonemizer")
+logging.getLogger("phonemizer").setLevel(logging.ERROR)
+
 import os
 import math
 import argparse
@@ -94,7 +100,7 @@ def train(args):
     audio_cfg = cfg["audio"]
     wandb.login()
     # Only resume wandb run when resuming training from checkpoint
-    wandb_kwargs = {"project": "vae_dit_tts_f5_text_enc_v3_fix_ctc", "config": cfg}
+    wandb_kwargs = {"project": "vae_dit_tts_f5_text_enc_v3_fix_ctc_gan", "config": cfg}
     wandb.init(**wandb_kwargs)
     print(f"Device: {device}")
 
@@ -340,8 +346,8 @@ def train(args):
                 # Duration MSE loss (log-domain)
                 dur_mse_loss = F.mse_loss(log_dur_pred, log_dur_real)
 
-                # Duration weight: fixed 1.0 (DiT already converged)
-                dur_weight = 1.0
+                # Duration weight: fixed 0.65 (DiT already converged)
+                dur_weight = 0.65
 
             # ── Train Duration Discriminator ──
             disc_optimizer.zero_grad()
@@ -349,8 +355,8 @@ def train(args):
                 d_real = dur_disc(text_kv_det, attention_mask, log_dur_real)
                 d_fake = dur_disc(text_kv_det, attention_mask, log_dur_pred.detach())
                 d_loss = (
-                    F.binary_cross_entropy_with_logits(d_real, torch.ones_like(d_real))
-                    + F.binary_cross_entropy_with_logits(d_fake, torch.zeros_like(d_fake))
+                    F.relu(1.0 - d_real).mean()
+                    + F.relu(1.0 + d_fake).mean()
                 )
             scaler.scale(d_loss).backward()
             scaler.unscale_(disc_optimizer)
@@ -360,16 +366,14 @@ def train(args):
             # ── Generator adversarial loss (dur_pred wants to fool discriminator) ──
             with autocast('cuda', enabled=train_cfg.get("fp16", True)):
                 g_fake = dur_disc(text_kv_det, attention_mask, log_dur_pred)
-                dur_adv_loss = F.binary_cross_entropy_with_logits(
-                    g_fake, torch.ones_like(g_fake),
-                )
+                dur_adv_loss = -g_fake.mean()
 
                 # Combined duration loss
                 dur_loss = dur_mse_loss + dur_adv_weight * dur_adv_loss
 
                 # CTC alignment loss (every 25 steps, decaying weight)
                 # 278k~300k: 0.02 (stable), 300k~340k: 0.02→0.005, 340k+: 0.005
-                ctc_decay_start, ctc_decay_end = 300000, 340000
+                ctc_decay_start, ctc_decay_end = 300000, 1240000
                 ctc_weight_start, ctc_weight_end = 0.02, 0.005
                 if global_step < ctc_decay_start:
                     ctc_weight = ctc_weight_start
@@ -439,6 +443,7 @@ def train(args):
                     print(f"  fm_loss={fm_losses['loss'].item()}, dur_loss={dur_loss.item()}")
                     print(f"  latent stats: mean={latent.mean():.4f}, std={latent.std():.4f}, max={latent.abs().max():.4f}")
                     optimizer.zero_grad()
+                    scaler.update() # NEED TO UPDATE SCALER EVEN ON SKIP!
                     continue
 
                 wandb.log({
