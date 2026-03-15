@@ -156,14 +156,19 @@ class DurationPredictor(nn.Module):
 
         # ConvNeXt blocks (need channel-first)
         mask_bool = text_mask.bool()
+        
+        # Zero out padded positions before convolution to prevent padded features (e.g. broadcasted noise) 
+        # from bleeding into valid tokens via convolution kernels with padding>0.
+        x = x * text_mask.unsqueeze(-1)
+        
         x_conv = x.transpose(1, 2)  # (B, hidden_dim, L)
         for conv_block in self.conv_blocks:
             x_conv = conv_block(x_conv)
+            # Re-mask after each conv block to prevent padding tokens from picking up bias/leaks
+            x_conv = x_conv * text_mask.unsqueeze(1)
+            
         x = x_conv.transpose(1, 2)  # (B, L, hidden_dim)
         x = self.conv_norm(x)
-
-        # Zero out padded positions before transformer
-        x = x * text_mask.unsqueeze(-1)
 
         # Transformer with padding mask
         pad_mask = ~mask_bool  # True = pad
