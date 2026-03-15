@@ -84,6 +84,10 @@ class DurationDiscriminator(nn.Module):
 
         # Concat text features + duration
         x = torch.cat([text_features, dur_expanded], dim=-1)  # (B, L, D+1)
+        
+        # Apply mask to zero out padding tokens (including broadcasted duration)
+        x = x * text_mask.unsqueeze(-1)
+        
         x = self.input_proj(x)  # (B, L, hidden_dim)
 
         # Conv processing (channel-first)
