@@ -267,6 +267,8 @@ def handle_Japanese_Eroge(base_dir, processed_dir, vae):
     filtered_tables = [f for f in files_tables if f.endswith(".parquet")]
     text_lines = []
     prefix_count = 0
+    skipped_count = 0
+    processed_count = 0
     wav_dir = os.path.join(processed_dir, "wav")
     os.makedirs(wav_dir, exist_ok=True)
 
@@ -297,11 +299,14 @@ def handle_Japanese_Eroge(base_dir, processed_dir, vae):
                 prefix_count += 1
                 torch.save(latent, os.path.join(wav_dir, output_file_name))
                 text_lines.append(f"none_{output_file_name}_{row['text']}\n")
+                processed_count += 1
             except Exception as e:
-                print(f"Skipping row {index} in {file}: {e}")
+                skipped_count += 1
+                tqdm.write(f"Skipping row {index} in {file}: {e}")
 
     with open(os.path.join(processed_dir, "content.txt"), "w", encoding="utf-8") as file:
         file.writelines(text_lines)
+    print(f"Japanese Eroge preprocessing complete: processed={processed_count}, skipped={skipped_count}")
 
 def handle_txt(base_dir: str, processed_dir: str, split: str):
     """
