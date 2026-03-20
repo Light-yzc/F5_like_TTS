@@ -11,7 +11,13 @@ extracts all unique characters, and saves the vocabulary.
 import os
 import json
 import argparse
+import sys
 from collections import Counter, defaultdict
+
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if PROJECT_ROOT not in sys.path:
+    sys.path.append(PROJECT_ROOT)
+
 from utils.g2p_ipa import g2p_ipa_batch
 
 BATCH_SIZE = 500  # Process 500 texts per espeak-ng call

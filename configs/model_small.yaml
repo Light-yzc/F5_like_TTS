@@ -1,0 +1,74 @@
+# VAE-DiT TTS — Small Config (~150M total trainable params including discriminators)
+
+vae:
+  model_path: "/content/F5_like_TTS/model_files/vae"
+  precision: "fp16"
+
+model:
+  # DiT
+  # Approx params: ~115M
+  latent_dim: 64
+  dit_dim: 640
+  depth: 18
+  heads: 10
+  head_dim: 64
+  ff_mult: 2.5
+
+  # F5-like Text Encoder
+  # Approx params: ~20M
+  text_encoder_vocab_size: 128
+  text_conv_depth: 8
+  text_conv_kernel: 9
+  text_conv_ff_mult: 3
+
+  # Duration Predictor
+  # Approx params: ~10M with current implementation
+  duration_hidden_dim: 384
+  duration_num_layers: 4
+  duration_nhead: 8
+  duration_conv_blocks: 3
+  duration_conv_kernel: 13
+  duration_noise_dim: 64
+  duration_disc_hidden: 256
+  duration_adv_weight: 0.1
+  duration_disc_enabled: true
+  duration_disc_lr: 2.0e-4
+  duration_disc_start_step: 2000
+  duration_disc_warmup_steps: 3000
+
+  # Latent GAN
+  latent_disc_hidden: 256
+  latent_disc_scales: 3
+  latent_adv_weight: 0.1
+  latent_fm_weight: 0.5
+  latent_gan_t_threshold: 0.5
+  latent_disc_enabled: true
+  latent_disc_lr: 2.0e-4
+  latent_disc_start_step: 15000
+  latent_disc_warmup_steps: 10000
+
+  # Flow Matching
+  cfg_dropout_rate: 0.15
+  default_cfg_scale: 3.0
+  default_infer_steps: 30
+  sway_coef: -1.0
+
+audio:
+  sample_rate: 48000
+  latent_rate: 25
+  max_duration_sec: 30
+  min_duration_sec: 3
+  prompt_ratio_min: 0.2
+  prompt_ratio_max: 0.5
+
+training:
+  batch_size: 11
+  learning_rate: 1.5e-4
+  weight_decay: 0.01
+  warmup_steps: 5000
+  max_steps: 750000
+  scheduler: cosine
+  gradient_clip: 1.0
+  fp16: true
+  gradient_checkpointing: false
+  gradient_accumulation_steps: 1

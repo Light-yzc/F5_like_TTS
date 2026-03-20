@@ -10,6 +10,12 @@ Usage:
 import os
 import json
 import argparse
+import sys
+
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if PROJECT_ROOT not in sys.path:
+    sys.path.append(PROJECT_ROOT)
+
 from utils.g2p_ipa import text_to_phonemes_ipa as text_to_phonemes
 
 

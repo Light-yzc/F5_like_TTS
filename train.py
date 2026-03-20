@@ -92,17 +92,39 @@ def build_models(cfg: dict, device: torch.device, char_tokenizer: CharTokenizer 
     return dit, text_encoder, dur_pred, flow
 
 
+def ramp_after(step: int, start_step: int, warmup_steps: int) -> float:
+    """0 before start_step, then linearly ramps to 1 over warmup_steps."""
+    if step < start_step:
+        return 0.0
+    if warmup_steps <= 0:
+        return 1.0
+    return min((step - start_step + 1) / warmup_steps, 1.0)
+
+
     
 def train(args):
     cfg = load_config(args.config)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     train_cfg = cfg["training"]
     audio_cfg = cfg["audio"]
+    wandb_cfg = cfg.get("wandb", {})
+    log_every_steps = train_cfg.get("log_every_steps", 25)
+    infer_every_steps = train_cfg.get("infer_every_steps", 2000)
+    save_every_steps = train_cfg.get("save_every_steps", 2000)
     wandb.login()
     # Only resume wandb run when resuming training from checkpoint
-    wandb_kwargs = {"project": "vae_dit_tts_f5_text_enc_v3_fix_ctc_gan", "config": cfg}
+    wandb_kwargs = {
+        "project": wandb_cfg.get("project", "vae_dit_tts_f5_text_enc_v3_fix_ctc_gan"),
+        "config": cfg,
+    }
+    if "mode" in wandb_cfg:
+        wandb_kwargs["mode"] = wandb_cfg["mode"]
     wandb.init(**wandb_kwargs)
     print(f"Device: {device}")
+    print(
+        f"W&B project={wandb_kwargs['project']}, "
+        f"log_every={log_every_steps}, infer_every={infer_every_steps}, save_every={save_every_steps}"
+    )
 
     # Load character vocabulary
     vocab_path = args.vocab or os.path.join(args.data_root, "char_vocab.json")
@@ -136,32 +158,47 @@ def train(args):
     print(f"TextEncoder parameters: {text_encoder.num_params / 1e6:.1f}M")
 
     # Duration Discriminator (VITS2-style adversarial training)
+    dur_disc_enabled = cfg["model"].get("duration_disc_enabled", True)
+    dur_disc_lr = cfg["model"].get("duration_disc_lr", 2e-4)
+    dur_disc_start_step = cfg["model"].get("duration_disc_start_step", 0)
+    dur_disc_warmup_steps = cfg["model"].get("duration_disc_warmup_steps", 0)
     dur_disc = DurationDiscriminator(
         text_dim=cfg["model"]["dit_dim"],
         hidden_dim=cfg["model"].get("duration_disc_hidden", 256),
     ).to(device)
     disc_optimizer = bnb.optim.AdamW8bit(
-        dur_disc.parameters(), lr=2e-4, weight_decay=0.01,
+        dur_disc.parameters(), lr=dur_disc_lr, weight_decay=0.01,
     )
     dur_adv_weight = cfg["model"].get("duration_adv_weight", 0.1)
     dur_noise_dim = cfg["model"].get("duration_noise_dim", 64)
     print(f"DurationDiscriminator parameters: {sum(p.numel() for p in dur_disc.parameters()) / 1e3:.1f}K")
-    print(f"Duration adversarial weight: {dur_adv_weight}, noise_dim: {dur_noise_dim}")
+    print(
+        f"Duration adversarial weight: {dur_adv_weight}, noise_dim: {dur_noise_dim}, "
+        f"enabled={dur_disc_enabled}, start_step={dur_disc_start_step}, warmup={dur_disc_warmup_steps}"
+    )
 
     # Latent Discriminator (Multi-Scale, for flow matching output)
+    latent_disc_enabled = cfg["model"].get("latent_disc_enabled", True)
+    latent_disc_lr = cfg["model"].get("latent_disc_lr", 2e-4)
+    latent_disc_start_step = cfg["model"].get("latent_disc_start_step", 0)
+    latent_disc_warmup_steps = cfg["model"].get("latent_disc_warmup_steps", 0)
     latent_disc = MultiScaleLatentDiscriminator(
         latent_dim=cfg["model"]["latent_dim"],
         hidden_dim=cfg["model"].get("latent_disc_hidden", 256),
         num_scales=cfg["model"].get("latent_disc_scales", 3),
     ).to(device)
     latent_disc_optimizer = bnb.optim.AdamW8bit(
-        latent_disc.parameters(), lr=2e-4, weight_decay=0.01,
+        latent_disc.parameters(), lr=latent_disc_lr, weight_decay=0.01,
     )
     latent_adv_weight = cfg["model"].get("latent_adv_weight", 0.1)
     latent_fm_weight = cfg["model"].get("latent_fm_weight", 2.0)
     latent_gan_t_threshold = cfg["model"].get("latent_gan_t_threshold", 0.5)
     print(f"LatentDiscriminator parameters: {sum(p.numel() for p in latent_disc.parameters()) / 1e3:.1f}K")
-    print(f"Latent GAN: adv_weight={latent_adv_weight}, fm_weight={latent_fm_weight}, t_threshold={latent_gan_t_threshold}")
+    print(
+        f"Latent GAN: adv_weight={latent_adv_weight}, fm_weight={latent_fm_weight}, "
+        f"t_threshold={latent_gan_t_threshold}, enabled={latent_disc_enabled}, "
+        f"start_step={latent_disc_start_step}, warmup={latent_disc_warmup_steps}"
+    )
 
     # Dataset
     dataset = TTSDataset(
@@ -226,7 +263,46 @@ def train(args):
         ckpt = torch.load(args.resume, map_location=device, weights_only=False)
         dit.load_state_dict(ckpt["dit"], strict=False)
         if "ctc_head" in ckpt:
-            ctc_head.load_state_dict(ckpt["ctc_head"])
+            saved_ctc = ckpt["ctc_head"]
+            current_ctc = ctc_head.state_dict()
+            compatible = {
+                k: v for k, v in saved_ctc.items()
+                if k in current_ctc and current_ctc[k].shape == v.shape
+            }
+
+            if len(compatible) == len(current_ctc):
+                ctc_head.load_state_dict(saved_ctc)
+                print("Loaded CTC head")
+            else:
+                patched = current_ctc.copy()
+                patched.update(compatible)
+
+                # Handle vocab expansion/shrinkage while preserving existing token rows
+                # and keeping the CTC blank row aligned to the last class index.
+                if "proj.weight" in saved_ctc and "proj.weight" in current_ctc:
+                    saved_w = saved_ctc["proj.weight"]
+                    current_w = current_ctc["proj.weight"].clone()
+                    token_rows = min(saved_w.shape[0] - 1, current_w.shape[0] - 1)
+                    if token_rows > 0:
+                        current_w[:token_rows] = saved_w[:token_rows]
+                    current_w[-1] = saved_w[-1]
+                    patched["proj.weight"] = current_w
+
+                if "proj.bias" in saved_ctc and "proj.bias" in current_ctc:
+                    saved_b = saved_ctc["proj.bias"]
+                    current_b = current_ctc["proj.bias"].clone()
+                    token_rows = min(saved_b.shape[0] - 1, current_b.shape[0] - 1)
+                    if token_rows > 0:
+                        current_b[:token_rows] = saved_b[:token_rows]
+                    current_b[-1] = saved_b[-1]
+                    patched["proj.bias"] = current_b
+
+                ctc_head.load_state_dict(patched, strict=False)
+                print(
+                    "Loaded CTC head with resized vocab: "
+                    f"old_classes={saved_ctc['proj.weight'].shape[0]}, "
+                    f"new_classes={current_ctc['proj.weight'].shape[0]}"
+                )
         if "text_encoder" in ckpt:
             text_encoder.load_state_dict(ckpt["text_encoder"])
         # Load dur_pred with shape-safe filtering (handles kernel/arch changes)
@@ -349,27 +425,45 @@ def train(args):
                 # Duration weight: decreased because raw frames MSE is much larger than log space
                 dur_weight = 1e-3
 
+            dur_disc_scale = (
+                ramp_after(global_step, dur_disc_start_step, dur_disc_warmup_steps)
+                if dur_disc_enabled else 0.0
+            )
+            latent_disc_scale = (
+                ramp_after(global_step, latent_disc_start_step, latent_disc_warmup_steps)
+                if latent_disc_enabled else 0.0
+            )
+            for pg in disc_optimizer.param_groups:
+                pg["lr"] = dur_disc_lr * dur_disc_scale
+            for pg in latent_disc_optimizer.param_groups:
+                pg["lr"] = latent_disc_lr * latent_disc_scale
+
             # ── Train Duration Discriminator ──
-            disc_optimizer.zero_grad()
-            with autocast('cuda', enabled=train_cfg.get("fp16", True)):
-                d_real = dur_disc(text_kv_det, attention_mask, dur_real)
-                d_fake = dur_disc(text_kv_det, attention_mask, dur_pred_out.detach())
-                d_loss = (
-                    F.relu(1.0 - d_real).mean()
-                    + F.relu(1.0 + d_fake).mean()
-                )
-            scaler.scale(d_loss).backward()
-            scaler.unscale_(disc_optimizer)
-            torch.nn.utils.clip_grad_norm_(dur_disc.parameters(), 1.0)
-            scaler.step(disc_optimizer)
+            d_loss = torch.tensor(0.0, device=device)
+            if dur_disc_scale > 0:
+                disc_optimizer.zero_grad()
+                with autocast('cuda', enabled=train_cfg.get("fp16", True)):
+                    d_real = dur_disc(text_kv_det, attention_mask, dur_real)
+                    d_fake = dur_disc(text_kv_det, attention_mask, dur_pred_out.detach())
+                    d_loss = (
+                        F.relu(1.0 - d_real).mean()
+                        + F.relu(1.0 + d_fake).mean()
+                    )
+                scaler.scale(d_loss).backward()
+                scaler.unscale_(disc_optimizer)
+                torch.nn.utils.clip_grad_norm_(dur_disc.parameters(), 1.0)
+                scaler.step(disc_optimizer)
 
             # ── Generator adversarial loss (dur_pred wants to fool discriminator) ──
+            dur_adv_loss = torch.tensor(0.0, device=device)
             with autocast('cuda', enabled=train_cfg.get("fp16", True)):
-                g_fake = dur_disc(text_kv_det, attention_mask, dur_pred_out)
-                dur_adv_loss = -g_fake.mean()
+                if dur_disc_scale > 0:
+                    g_fake = dur_disc(text_kv_det, attention_mask, dur_pred_out)
+                    dur_adv_loss = -g_fake.mean()
 
                 # Combined duration loss
-                dur_loss = dur_mse_loss + dur_adv_weight * dur_adv_loss
+                cur_dur_adv_weight = dur_adv_weight * dur_disc_scale
+                dur_loss = dur_mse_loss + cur_dur_adv_weight * dur_adv_loss
 
                 # CTC alignment loss (every 25 steps, decaying weight)
                 # 278k~300k: 0.02 (stable), 300k~340k: 0.02→0.005, 340k+: 0.005
@@ -403,8 +497,9 @@ def train(args):
             latent_d_loss = torch.tensor(0.0, device=device)
             latent_g_adv = torch.tensor(0.0, device=device)
             latent_g_fm = torch.tensor(0.0, device=device)
+            latent_gan_loss = torch.tensor(0.0, device=device)
 
-            if gan_mask.any():
+            if latent_disc_scale > 0 and gan_mask.any():
                 x_real = fm_losses["x_0_real"][gan_mask]
                 x_fake = fm_losses["x_0_hat"][gan_mask]
                 tgt_mask_gan = target_mask[gan_mask]
@@ -431,21 +526,24 @@ def train(args):
                         _, d_real_fmaps_fg = latent_disc(x_real.detach(), tgt_mask_gan)
                     latent_g_fm = feature_matching_loss(d_real_fmaps_fg, g_fake_fmaps)
 
+                    cur_latent_adv_weight = latent_adv_weight * latent_disc_scale
+                    cur_latent_fm_weight = latent_fm_weight * latent_disc_scale
                     latent_gan_loss = (
-                        latent_adv_weight * latent_g_adv
-                        + latent_fm_weight * latent_g_fm
+                        cur_latent_adv_weight * latent_g_adv
+                        + cur_latent_fm_weight * latent_g_fm
                     )
                     loss = loss + latent_gan_loss
 
-                # NaN check on loss
-                if torch.isnan(loss) or torch.isinf(loss):
-                    print(f"[Step {global_step}] WARNING: NaN/Inf loss detected!")
-                    print(f"  fm_loss={fm_losses['loss'].item()}, dur_loss={dur_loss.item()}")
-                    print(f"  latent stats: mean={latent.mean():.4f}, std={latent.std():.4f}, max={latent.abs().max():.4f}")
-                    optimizer.zero_grad()
-                    scaler.update() # NEED TO UPDATE SCALER EVEN ON SKIP!
-                    continue
+            # NaN check on loss
+            if torch.isnan(loss) or torch.isinf(loss):
+                print(f"[Step {global_step}] WARNING: NaN/Inf loss detected!")
+                print(f"  fm_loss={fm_losses['loss'].item()}, dur_loss={dur_loss.item()}")
+                print(f"  latent stats: mean={latent.mean():.4f}, std={latent.std():.4f}, max={latent.abs().max():.4f}")
+                optimizer.zero_grad()
+                scaler.update() # NEED TO UPDATE SCALER EVEN ON SKIP!
+                continue
 
+            if global_step % log_every_steps == 0:
                 wandb.log({
                     "train/loss": loss.item(),
                     "train/fm_loss": fm_losses["loss"].item(),
@@ -454,11 +552,16 @@ def train(args):
                     "train/dur_adv": dur_adv_loss.item(),
                     "train/d_loss": d_loss.item(),
                     "train/dur_weight": dur_weight,
+                    "train/dur_disc_scale": dur_disc_scale,
+                    "train/dur_disc_lr": disc_optimizer.param_groups[0]["lr"],
                     "train/ctc_loss": ctc_loss.item(),
                     "train/ctc_weight": ctc_weight,
                     "train/latent_d_loss": latent_d_loss.item(),
                     "train/latent_g_adv": latent_g_adv.item(),
                     "train/latent_g_fm": latent_g_fm.item(),
+                    "train/latent_gan_loss": latent_gan_loss.item(),
+                    "train/latent_disc_scale": latent_disc_scale,
+                    "train/latent_disc_lr": latent_disc_optimizer.param_groups[0]["lr"],
                     "train/lr": scheduler.get_last_lr()[0],
                 }, step=global_step)
 
@@ -484,7 +587,7 @@ def train(args):
             #         "lr": f"{lr:.2e}"
             #     })
             # Periodic inference with on-demand VAE
-            if global_step % 500 == 0:
+            if infer_every_steps > 0 and global_step % infer_every_steps == 0:
                 try:
                     tts_texts = [
                         'ZH_杀死我的责任，你打算怎么负责呢？”纯白的吸血姬这么说着。',
@@ -534,7 +637,7 @@ def train(args):
                     text_encoder.train()
 
             # Save checkpoint
-            if global_step % 2000 == 0:
+            if save_every_steps > 0 and global_step % save_every_steps == 0:
                 ckpt_dir = os.path.join(args.output_dir, f"step_{global_step}")
                 os.makedirs(ckpt_dir, exist_ok=True)
                 torch.save({
