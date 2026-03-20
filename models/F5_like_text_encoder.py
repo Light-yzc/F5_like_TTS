@@ -23,8 +23,11 @@ from typing import Optional
 
 class CharTokenizer:
     """
-    Simple character-level tokenizer.
-    Vocab: PAD=0, UNK=1, all unique chars seen during build_vocab().
+    Character-level tokenizer with optional multi-character special token support.
+
+    If the vocab contains entries such as "<PAD>", "<UNK>", or "[EROGE]",
+    encode() will greedily match the longest special token first, and fall back
+    to single-character lookup for the rest.
     """
 
     def __init__(self, vocab: dict[str, int] | None = None):
@@ -32,6 +35,11 @@ class CharTokenizer:
         self.unk_id = 1
         self.vocab = vocab or {"<PAD>": 0, "<UNK>": 1}
         self.id_to_char = {v: k for k, v in self.vocab.items()}
+        self.special_tokens = sorted(
+            [token for token in self.vocab if len(token) > 1],
+            key=len,
+            reverse=True,
+        )
 
     @property
     def vocab_size(self) -> int:
@@ -44,9 +52,31 @@ class CharTokenizer:
                 if ch not in self.vocab:
                     self.vocab[ch] = len(self.vocab)
         self.id_to_char = {v: k for k, v in self.vocab.items()}
+        self.special_tokens = sorted(
+            [token for token in self.vocab if len(token) > 1],
+            key=len,
+            reverse=True,
+        )
 
     def encode(self, text: str) -> list[int]:
-        return [self.vocab.get(ch, self.unk_id) for ch in text]
+        ids = []
+        i = 0
+        while i < len(text):
+            matched = False
+            for token in self.special_tokens:
+                if text.startswith(token, i):
+                    ids.append(self.vocab[token])
+                    i += len(token)
+                    matched = True
+                    break
+            if matched:
+                continue
+            ids.append(self.vocab.get(text[i], self.unk_id))
+            i += 1
+        return ids
+
+    def encoded_length(self, text: str) -> int:
+        return len(self.encode(text))
 
     def batch_encode(
         self,

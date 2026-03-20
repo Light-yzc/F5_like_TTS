@@ -10,7 +10,10 @@ Usage:
 import os
 import json
 import argparse
-from utils.g2p import text_to_phonemes
+from utils.g2p_ipa import text_to_phonemes_ipa as text_to_phonemes
+
+
+EROGE_TAG = "[EROGE]"
 
 
 def extend_vocab(existing_path: str, new_data_root: str) -> dict[str, int]:
@@ -36,7 +39,20 @@ def extend_vocab(existing_path: str, new_data_root: str) -> dict[str, int]:
             if len(parts) < 3:
                 continue
             speaker = parts[0]
-            language = "ZH" if speaker.startswith("SSB") else "JA"
+            utt_id = parts[1]
+            if speaker == "none":
+                language = "JA"
+                if EROGE_TAG not in vocab:
+                    vocab[EROGE_TAG] = len(vocab)
+                    new_chars.append(EROGE_TAG)
+            elif speaker.startswith("jvs"):
+                language = "JA"
+            elif speaker.startswith("SSB"):
+                language = "ZH"
+            elif utt_id.startswith("char"):
+                language = "JA"
+            else:
+                language = "EN"
             text = parts[2]
             phonemes = text_to_phonemes(text, language)
 

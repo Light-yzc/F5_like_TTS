@@ -122,26 +122,35 @@ class TTSDataset(Dataset):
 
         # Prompt: pick a different utterance from the same speaker
         same_speaker_indices = self.speaker_to_indices[speaker]
-        if speaker != "none" and len(same_speaker_indices) > 1:
+        if speaker == "none":
+            # No reliable reference exists for these samples.
+            # Keep the prompt side empty so the model learns target-text-only conditioning.
+            prompt_latent = target_latent[:0]
+            prompt_text = ""
+            target_text = sample["text"]
+        elif len(same_speaker_indices) > 1:
             prompt_idx = idx
             while prompt_idx == idx:
                 prompt_idx = random.choice(same_speaker_indices)
             prompt_latent = self._load_latent(self.samples[prompt_idx]["latent_path"])
             prompt_text = self.samples[prompt_idx]["text"]
+            target_text = sample["text"]
         else:
-            # Fallback: same-utterance split
+            # Fallback: split the same utterance into prompt + target, matching LoRA behavior
             ratio = random.uniform(self.prompt_ratio_min, self.prompt_ratio_max)
             split = max(1, min(int(target_latent.shape[0] * ratio), target_latent.shape[0] - 1))
             prompt_latent = target_latent[:split]
             target_latent = target_latent[split:]
-            prompt_text = sample["text"]  # full text as approximation
+            split_char = max(1, int(len(sample["text"]) * ratio))
+            prompt_text = sample["text"][:split_char]
+            target_text = sample["text"][split_char:]
 
         # Apply G2P and language tags individually to prompt and target
         lang = sample["language"]
-        mapped_prompt = text_to_phonemes(prompt_text, lang)
-        target_text = sample["text"]
+        mapped_prompt = text_to_phonemes(prompt_text, lang) if prompt_text else ""
         mapped_target = text_to_phonemes(target_text, lang)
-        
+        if speaker == "none":
+            mapped_prompt = f'[EROGE] {mapped_prompt}'
         # Combined text for Text Encoder: "[LANG] prompt_phonemes [SEP] [LANG] target_phonemes"
         full_text = f"{mapped_prompt} [SEP] {mapped_target}"
 
@@ -234,9 +243,8 @@ def collate_fn(batch: list[dict], tokenizer=None, max_text_len: int = 512) -> di
         # Calculate target_text_mask for duration predictor
         target_text_masks = torch.zeros_like(encoded["attention_mask"])
         for i, item in enumerate(batch):
-            # full_text is mapped_prompt + " [SEP] " + mapped_target
-            # Since CharTokenizer maps 1 char -> 1 token, target starts exactly at this index:
-            start_idx = len(item["prompt_text_mapped"]) + 7
+            prefix_text = f'{item["prompt_text_mapped"]} [SEP] '
+            start_idx = tokenizer.encoded_length(prefix_text) if hasattr(tokenizer, "encoded_length") else len(tokenizer.encode(prefix_text))
             target_text_masks[i, start_idx:] = encoded["attention_mask"][i, start_idx:]
                     
         result["target_text_mask"] = target_text_masks

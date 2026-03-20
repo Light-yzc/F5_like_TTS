@@ -208,9 +208,8 @@ def inference(
         
         # Calculate target_text_mask for inference
         target_text_mask = torch.zeros_like(attention_mask)
-        # Because CharTokenizer is 1 char = 1 token, the target starts exactly
-        # after mapped_prompt_text (len) + " [SEP] " (7 chars)
-        start_idx = len(mapped_prompt_text) + 7
+        prefix_text = f"{mapped_prompt_text} [SEP] "
+        start_idx = char_tokenizer.encoded_length(prefix_text) if char_tokenizer is not None and hasattr(char_tokenizer, "encoded_length") else len((char_tokenizer or fallback_tokenizer).encode(prefix_text))
         target_text_mask[0, start_idx:] = attention_mask[0, start_idx:]
 
         text_kv, text_mask = text_encoder(input_ids, attention_mask)
@@ -402,7 +401,8 @@ def _inference_core(
         attention_mask = tokens["attention_mask"].to(device)
 
         target_text_mask = torch.zeros_like(attention_mask)
-        start_idx = len(mapped_prompt_text) + 7
+        prefix_text = f"{mapped_prompt_text} [SEP] "
+        start_idx = char_tokenizer.encoded_length(prefix_text) if char_tokenizer is not None and hasattr(char_tokenizer, "encoded_length") else len((char_tokenizer or fallback_tokenizer).encode(prefix_text))
         target_text_mask[0, start_idx:] = attention_mask[0, start_idx:]
 
         text_kv, text_mask = text_encoder(input_ids, attention_mask)

@@ -25,6 +25,7 @@ def build_vocab(data_root: str) -> dict[str, int]:
 
     # ── Pass 1: Group texts by language ──
     lang_texts: dict[str, list[str]] = defaultdict(list)
+    has_eroge_samples = False
 
     with open(content_path, "r", encoding="utf-8") as f:
         for line in f:
@@ -36,7 +37,10 @@ def build_vocab(data_root: str) -> dict[str, int]:
                 continue
             speaker = parts[0]
             text = parts[2]
-            if speaker.startswith("jvs"):
+            if speaker == "none":
+                language = "JA"
+                has_eroge_samples = True
+            elif speaker.startswith("jvs"):
                 language = "JA"
             elif speaker.startswith("SSB"):
                 language = "ZH"
@@ -65,8 +69,11 @@ def build_vocab(data_root: str) -> dict[str, int]:
 
     # Build vocab: PAD=0, UNK=1, then sorted by frequency (most frequent first)
     vocab = {"<PAD>": 0, "<UNK>": 1}
+    if has_eroge_samples:
+        vocab["[EROGE]"] = len(vocab)
     for char, _count in char_counter.most_common():
-        vocab[char] = len(vocab)
+        if char not in vocab:
+            vocab[char] = len(vocab)
 
     print(f"Scanned {num_lines} lines")
     print(f"Unique characters: {len(vocab) - 2}")
