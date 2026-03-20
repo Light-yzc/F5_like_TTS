@@ -73,7 +73,10 @@ class TTSDataset(Dataset):
                 speaker, utt_id, text = line.split('_', 2)  # maxsplit=2
                 sample_idx = len(self.samples)
                 latent_name = utt_id
-                if speaker.startswith("jvs"):
+                if speaker == "none":
+                    latent_name = utt_id
+                    language = "JA"
+                elif speaker.startswith("jvs"):
                     latent_name = f"{utt_id.split('.')[0]}.pt"
                     language = "JA"
                 elif speaker.startswith("SSB"):
@@ -119,7 +122,7 @@ class TTSDataset(Dataset):
 
         # Prompt: pick a different utterance from the same speaker
         same_speaker_indices = self.speaker_to_indices[speaker]
-        if len(same_speaker_indices) > 1:
+        if speaker != "none" and len(same_speaker_indices) > 1:
             prompt_idx = idx
             while prompt_idx == idx:
                 prompt_idx = random.choice(same_speaker_indices)

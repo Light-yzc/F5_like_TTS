@@ -30,7 +30,8 @@ import torch
 import torchaudio
 from tqdm import tqdm
 from pathlib import Path
-
+import pandas as pd
+import io
 # Add project root to sys.path to allow importing from models
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -261,6 +262,47 @@ def handle_asmr_text(base_dir, processed_dir, vae):
     with open(os.path.join(processed_dir, 'content.txt'), 'w', encoding='utf-8') as fout:
         fout.writelines(text_line)
         
+def handle_Japanese_Eroge(base_dir, processed_dir, vae):
+    files_tables = os.listdir(base_dir)
+    filtered_tables = [f for f in files_tables if f.endswith(".parquet")]
+    text_lines = []
+    prefix_count = 0
+    wav_dir = os.path.join(processed_dir, "wav")
+    os.makedirs(wav_dir, exist_ok=True)
+
+    for file in tqdm(filtered_tables, desc="Processing Japanese Eroge parquet"):
+        base_path = os.path.join(base_dir, file)
+        try:
+            df = pd.read_parquet(base_path)
+        except Exception as e:
+            print(f"Skipping parquet {file}: {e}")
+            continue
+
+        for index, row in tqdm(df.iterrows(), total=len(df), desc=file, leave=False):
+            try:
+                audio_info = row["audio"]
+                audio_bytes = audio_info["bytes"] if isinstance(audio_info, dict) else audio_info
+                file_obj = io.BytesIO(audio_bytes)
+                wav, sample_rate = torchaudio.load(file_obj)
+                if sample_rate != 48000:
+                    wav = torchaudio.functional.resample(wav, orig_freq=sample_rate, new_freq=48000)
+                wav = torch.clamp(wav, -1.0, 1.0).to(device=vae.device, dtype=vae.dtype)
+                if wav.shape[0] == 1:
+                    wav = wav.repeat(2, 1)
+                latent = vae_encode(vae, wav.unsqueeze(0))
+                latent = latent.squeeze(0).cpu()
+
+                output_file_stem = f"eroge-{prefix_count}-{index}"
+                output_file_name = f"{output_file_stem}.pt"
+                prefix_count += 1
+                torch.save(latent, os.path.join(wav_dir, output_file_name))
+                text_lines.append(f"none_{output_file_name}_{row['text']}\n")
+            except Exception as e:
+                print(f"Skipping row {index} in {file}: {e}")
+
+    with open(os.path.join(processed_dir, "content.txt"), "w", encoding="utf-8") as file:
+        file.writelines(text_lines)
+
 def handle_txt(base_dir: str, processed_dir: str, split: str):
     """
     Parse content.txt and extract Chinese characters only.
@@ -287,6 +329,7 @@ def handle_txt(base_dir: str, processed_dir: str, split: str):
             fout.write(f"{speaker}_{utterance_id}_{only_text}\n")
 
     print(f"Processed text for {split}: {out_txt}")
+
 
 with torch.no_grad():
   def main():
@@ -320,6 +363,8 @@ with torch.no_grad():
         handle_FGO_audio_and_text(args.base_dir, args.processed_dir, vae)
       elif args.dataset_name == "asmr":
         handle_asmr_text(args.base_dir, args.processed_dir, vae)
+      elif args.dataset_name == 'eroge':
+         handle_Japanese_Eroge(args.base_dir, args.processed_dir, vae)
       print("Done!")
 
 
