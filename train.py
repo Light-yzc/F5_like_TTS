@@ -400,12 +400,12 @@ def train(args):
                 # Decide which auxiliary losses to compute this step
                 use_ctc = (global_step % 25 == 0)
 
-                # Flow matching loss (with hidden states for CTC)
+                # Flow matching loss; only keep hidden states on CTC steps.
                 fm_losses = flow.compute_loss(
                     dit, latent, prompt_mask, target_mask,
                     text_kv, text_mask, null_kv,
                     padding_mask=padding_mask,
-                    return_hidden=True,
+                    return_hidden=use_ctc,
                 )
 
                 # ── Duration predictor (VITS2-style: log-domain + noise + GAN) ──
