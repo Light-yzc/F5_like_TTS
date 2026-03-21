@@ -316,28 +316,43 @@ def train(args):
                 print(f"dur_pred: loaded {len(compatible)}, skipped {len(skipped)} (shape mismatch): {skipped}")
             else:
                 print(f"dur_pred: loaded all {len(compatible)} params")
+        dur_disc_loaded = False
         if "dur_disc" in ckpt:
             try:
                 dur_disc.load_state_dict(ckpt["dur_disc"])
+                dur_disc_loaded = True
                 print("Loaded duration discriminator")
             except Exception as e:
                 print(f"WARNING: Could not load dur_disc state: {e}")
+                print("Reinitializing duration discriminator from current config.")
         if "disc_optimizer" in ckpt:
-            try:
-                disc_optimizer.load_state_dict(ckpt["disc_optimizer"])
-            except Exception as e:
-                print(f"WARNING: Could not load disc_optimizer state: {e}")
+            if dur_disc_loaded:
+                try:
+                    disc_optimizer.load_state_dict(ckpt["disc_optimizer"])
+                except Exception as e:
+                    print(f"WARNING: Could not load disc_optimizer state: {e}")
+                    print("Continuing with fresh duration discriminator optimizer state.")
+            else:
+                print("Skipping disc_optimizer restore because duration discriminator was reinitialized.")
+
+        latent_disc_loaded = False
         if "latent_disc" in ckpt:
             try:
                 latent_disc.load_state_dict(ckpt["latent_disc"])
+                latent_disc_loaded = True
                 print("Loaded latent discriminator")
             except Exception as e:
                 print(f"WARNING: Could not load latent_disc state: {e}")
+                print("Reinitializing latent discriminator from current config.")
         if "latent_disc_optimizer" in ckpt:
-            try:
-                latent_disc_optimizer.load_state_dict(ckpt["latent_disc_optimizer"])
-            except Exception as e:
-                print(f"WARNING: Could not load latent_disc_optimizer state: {e}")
+            if latent_disc_loaded:
+                try:
+                    latent_disc_optimizer.load_state_dict(ckpt["latent_disc_optimizer"])
+                except Exception as e:
+                    print(f"WARNING: Could not load latent_disc_optimizer state: {e}")
+                    print("Continuing with fresh latent discriminator optimizer state.")
+            else:
+                print("Skipping latent_disc_optimizer restore because latent discriminator was reinitialized.")
         try:
             optimizer.load_state_dict(ckpt["optimizer"])
         except (ValueError, RuntimeError) as e:

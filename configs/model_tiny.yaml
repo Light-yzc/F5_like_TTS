@@ -28,7 +28,7 @@ model:
   duration_conv_blocks: 3
   duration_conv_kernel: 13
   duration_noise_dim: 64
-  duration_disc_hidden: 256
+  duration_disc_hidden: 512
   duration_adv_weight: 0.1
   duration_disc_enabled: true
   duration_disc_lr: 2.0e-4
@@ -36,8 +36,8 @@ model:
   duration_disc_warmup_steps: 3000
 
   # Latent GAN
-  latent_disc_hidden: 256
-  latent_disc_scales: 3
+  latent_disc_hidden: 512
+  latent_disc_scales: 4
   latent_adv_weight: 0.1
   latent_fm_weight: 0.5
   latent_gan_t_threshold: 0.5
