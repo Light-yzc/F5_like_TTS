@@ -56,7 +56,7 @@ class FlowMatching:
         null_text_kv: Optional[torch.Tensor] = None,
         padding_mask: Optional[torch.Tensor] = None,
         return_hidden: bool = False,
-        ap_layer_idx: Optional[int] = None,
+        ap_layer_indices: Optional[list[int]] = None,
     ) -> dict[str, torch.Tensor]:
         """
         Compute flow matching training loss on packed latent.
@@ -71,7 +71,7 @@ class FlowMatching:
             null_text_kv: (B, L_null, dit_dim) null condition for CFG training
             padding_mask: (B, T) 1=valid (prompt or target), 0=pad
             return_hidden: bool, if True, return DiT last-layer hidden states
-            ap_layer_idx: int|None, if set, return cross-attn weights from this layer
+            ap_layer_indices: list[int]|None, if set, return cross-attn weights from these layers
 
         Returns:
             dict with 'loss', 'mse', and optionally 'hidden_states'/'attn_weights' keys
@@ -79,6 +79,7 @@ class FlowMatching:
         B, T, D = latent.shape
         device = latent.device
         dtype = latent.dtype
+        want_aux = return_hidden or bool(ap_layer_indices)
 
         # Sample timestep t ~ U(0, 1) for each sample
         t = torch.rand(B, device=device, dtype=dtype)
@@ -121,14 +122,15 @@ class FlowMatching:
         dit_output = dit_model(
             x_t, mask_channel, t, text_kv_train, text_mask_train,
             padding_mask=padding_mask,
-            return_hidden=return_hidden,
-            ap_layer_idx=ap_layer_idx,
+            return_hidden=want_aux,
+            ap_layer_indices=ap_layer_indices,
         )
 
-        if return_hidden:
+        if want_aux:
             v_pred, hidden_states, attn_weights = dit_output
         else:
             v_pred = dit_output
+            hidden_states = None
             attn_weights = None
 
         # Loss: only on valid target frames (where target_mask=1)
@@ -149,10 +151,13 @@ class FlowMatching:
             "t": t,
         }
 
-        if return_hidden:
+        if return_hidden and hidden_states is not None:
             result["hidden_states"] = hidden_states
 
-        if attn_weights is not None:
+        if isinstance(attn_weights, list):
+            if attn_weights:
+                result["attn_weights"] = attn_weights
+        elif attn_weights is not None:
             result["attn_weights"] = attn_weights
 
         return result

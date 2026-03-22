@@ -32,6 +32,7 @@ from models.latent_discriminator import (
 )
 from models.flow_matching import FlowMatching
 from models.ctc_head import CTCAlignmentHead
+from models.attention_prior_loss import AttentionPriorLoss
 from data.dataset import TTSDataset, collate_fn
 from inference import inference
 from models.vae import load_vae, vae_encode, vae_decode
@@ -116,6 +117,21 @@ def train(args):
     ctc_weight_end = train_cfg.get("ctc_weight_end", 0.005)
     ctc_decay_start = train_cfg.get("ctc_decay_start", 300000)
     ctc_decay_end = train_cfg.get("ctc_decay_end", 1240000)
+    ap_enabled = train_cfg.get("attention_prior_enabled", False)
+    ap_sigma = train_cfg.get("attention_prior_sigma", 0.4)
+    ap_weight = train_cfg.get("attention_prior_weight", 0.0)
+    ap_every_steps = train_cfg.get("attention_prior_every_steps", 1)
+    ap_layer_indices = train_cfg.get("attention_prior_layer_indices")
+    if ap_layer_indices is None:
+        ap_layer_indices = [train_cfg.get("attention_prior_layer_idx", cfg["model"]["depth"] * 2 // 3)]
+    ap_layer_indices = sorted({int(idx) for idx in ap_layer_indices})
+    model_depth = cfg["model"]["depth"]
+    if any(idx < 0 or idx >= model_depth for idx in ap_layer_indices):
+        raise ValueError(
+            f"attention_prior_layer_indices must be within [0, {model_depth - 1}], got {ap_layer_indices}"
+        )
+    ap_start_step = train_cfg.get("attention_prior_start_step", 0)
+    ap_warmup_steps = train_cfg.get("attention_prior_warmup_steps", 0)
     wandb.login()
     # Only resume wandb run when resuming training from checkpoint
     wandb_kwargs = {
@@ -134,6 +150,10 @@ def train(args):
         f"CTC schedule: every={ctc_every_steps} steps, "
         f"weight={ctc_weight_start}->{ctc_weight_end}, "
         f"decay={ctc_decay_start}->{ctc_decay_end}"
+    )
+    print(
+        f"Attention prior: enabled={ap_enabled}, layers={ap_layer_indices}, sigma={ap_sigma}, "
+        f"weight={ap_weight}, every={ap_every_steps}, start={ap_start_step}, warmup={ap_warmup_steps}"
     )
 
     # Load character vocabulary
@@ -164,6 +184,7 @@ def train(args):
         dit_dim=cfg["model"]["dit_dim"],
         vocab_size=char_tokenizer.vocab_size,
     ).to(device)
+    ap_loss_fn = AttentionPriorLoss(sigma=ap_sigma).to(device)
     print(f"CTC Head parameters: {sum(p.numel() for p in ctc_head.parameters()) / 1e3:.1f}K")
     print(f"TextEncoder parameters: {text_encoder.num_params / 1e6:.1f}M")
 
@@ -424,13 +445,20 @@ def train(args):
 
                 # Decide which auxiliary losses to compute this step
                 use_ctc = (ctc_every_steps > 0 and global_step % ctc_every_steps == 0)
+                use_ap = (
+                    ap_enabled
+                    and ap_every_steps > 0
+                    and global_step >= ap_start_step
+                    and global_step % ap_every_steps == 0
+                )
 
-                # Flow matching loss; only keep hidden states on CTC steps.
+                # Flow matching loss; keep auxiliary outputs only when an aux loss needs them.
                 fm_losses = flow.compute_loss(
                     dit, latent, prompt_mask, target_mask,
                     text_kv, text_mask, null_kv,
                     padding_mask=padding_mask,
-                    return_hidden=use_ctc,
+                    return_hidden=(use_ctc or use_ap),
+                    ap_layer_indices=ap_layer_indices if use_ap else None,
                 )
 
                 # ── Duration predictor (VITS2-style: log-domain + noise + GAN) ──
@@ -511,7 +539,34 @@ def train(args):
                 else:
                     ctc_loss = torch.tensor(0.0, device=device)
 
-                loss = fm_losses["loss"] + dur_weight * dur_loss + ctc_weight * ctc_loss
+                ap_scale = (
+                    ramp_after(global_step, ap_start_step, ap_warmup_steps)
+                    if ap_enabled else 0.0
+                )
+                cur_ap_weight = ap_weight * ap_scale
+                ap_loss = torch.tensor(0.0, device=device)
+                if use_ap and cur_ap_weight > 0 and "attn_weights" in fm_losses:
+                    attn_weights = fm_losses["attn_weights"]
+                    if isinstance(attn_weights, list):
+                        ap_loss_terms = [
+                            ap_loss_fn(layer_attn_weights, target_text_mask, target_mask)
+                            for layer_attn_weights in attn_weights
+                        ]
+                        if ap_loss_terms:
+                            ap_loss = torch.stack(ap_loss_terms).mean()
+                    else:
+                        ap_loss = ap_loss_fn(
+                            attn_weights,
+                            target_text_mask,
+                            target_mask,
+                        )
+
+                loss = (
+                    fm_losses["loss"]
+                    + dur_weight * dur_loss
+                    + ctc_weight * ctc_loss
+                    + cur_ap_weight * ap_loss
+                )
 
             # ── Train Latent Discriminator (only when t < threshold, i.e., near clean data) ──
             latent_t = fm_losses["t"]
@@ -579,6 +634,9 @@ def train(args):
                     "train/ctc_loss": ctc_loss.item(),
                     "train/ctc_weight": ctc_weight,
                     "train/ctc_applied": float(use_ctc),
+                    "train/ap_loss": ap_loss.item(),
+                    "train/ap_weight": cur_ap_weight,
+                    "train/ap_applied": float(use_ap),
                     "train/latent_d_loss": latent_d_loss.item(),
                     "train/latent_g_adv": latent_g_adv.item(),
                     "train/latent_g_fm": latent_g_fm.item(),

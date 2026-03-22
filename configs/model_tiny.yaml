@@ -85,3 +85,10 @@ training:
   ctc_weight_end: 0.01
   ctc_decay_start: 0
   ctc_decay_end: 750000
+  attention_prior_enabled: true
+  attention_prior_sigma: 0.45
+  attention_prior_weight: 0.005
+  attention_prior_every_steps: 1
+  attention_prior_layer_indices: [8, 9, 10]
+  attention_prior_start_step: 300000
+  attention_prior_warmup_steps: 10000

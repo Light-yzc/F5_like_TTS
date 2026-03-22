@@ -445,7 +445,7 @@ class DiT(nn.Module):
         text_mask: Optional[torch.Tensor] = None,
         padding_mask: Optional[torch.Tensor] = None,
         return_hidden: bool = False,
-        ap_layer_idx: Optional[int] = None,
+        ap_layer_indices: Optional[list[int]] = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -456,9 +456,10 @@ class DiT(nn.Module):
             text_mask:     (B, L)             text attention mask
             padding_mask:  (B, T)             1=valid, 0=pad (for self-attention)
             return_hidden: bool               if True, also return last block hidden states
-            ap_layer_idx:  int|None           if set, return cross-attn weights from this layer
+            ap_layer_indices: list[int]|None  if set, return cross-attn weights from these layers
         """
         B, T, D = x_t.shape
+        ap_layer_set = set(ap_layer_indices or [])
 
         # Optionally expand text tokens to frame length (nearest-neighbor repeat)
         if self.use_text_expand:
@@ -482,11 +483,11 @@ class DiT(nn.Module):
         text_rope_cos, text_rope_sin = self.rotary_emb(L_text, x.device)
 
         # Transformer blocks
-        attn_weights = None
+        attn_weights = []
         for i, block in enumerate(self.blocks):
             diag_bias = None
-            # Return cross-attention weights from selected layer for Attention Prior
-            want_attn = (ap_layer_idx is not None and i == ap_layer_idx)
+            # Return cross-attention weights from selected layers for Attention Prior
+            want_attn = i in ap_layer_set
             if self.gradient_checkpointing and self.training and not want_attn:
                 x = checkpoint(
                     block, x, time_emb, text_kv, text_mask,
@@ -504,7 +505,8 @@ class DiT(nn.Module):
                     return_cross_attn_weights=want_attn,
                 )
                 if want_attn:
-                    x, attn_weights = block_out
+                    x, layer_attn_weights = block_out
+                    attn_weights.append(layer_attn_weights)
                 else:
                     x = block_out
 
