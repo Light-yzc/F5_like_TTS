@@ -52,6 +52,8 @@ model:
   default_cfg_scale: 3.0
   default_infer_steps: 30
   sway_coef: -1.0
+  duration_infer_scale: 1.08
+  duration_infer_bias_sec: 0.12
 
 audio:
   sample_rate: 48000
@@ -72,3 +74,8 @@ training:
   fp16: true
   gradient_checkpointing: false
   gradient_accumulation_steps: 1
+  ctc_every_steps: 5
+  ctc_weight_start: 0.03
+  ctc_weight_end: 0.01
+  ctc_decay_start: 0
+  ctc_decay_end: 750000

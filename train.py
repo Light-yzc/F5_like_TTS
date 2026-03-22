@@ -111,6 +111,11 @@ def train(args):
     log_every_steps = train_cfg.get("log_every_steps", 25)
     infer_every_steps = train_cfg.get("infer_every_steps", 2000)
     save_every_steps = train_cfg.get("save_every_steps", 2000)
+    ctc_every_steps = train_cfg.get("ctc_every_steps", 25)
+    ctc_weight_start = train_cfg.get("ctc_weight_start", 0.02)
+    ctc_weight_end = train_cfg.get("ctc_weight_end", 0.005)
+    ctc_decay_start = train_cfg.get("ctc_decay_start", 300000)
+    ctc_decay_end = train_cfg.get("ctc_decay_end", 1240000)
     wandb.login()
     # Only resume wandb run when resuming training from checkpoint
     wandb_kwargs = {
@@ -124,6 +129,11 @@ def train(args):
     print(
         f"W&B project={wandb_kwargs['project']}, "
         f"log_every={log_every_steps}, infer_every={infer_every_steps}, save_every={save_every_steps}"
+    )
+    print(
+        f"CTC schedule: every={ctc_every_steps} steps, "
+        f"weight={ctc_weight_start}->{ctc_weight_end}, "
+        f"decay={ctc_decay_start}->{ctc_decay_end}"
     )
 
     # Load character vocabulary
@@ -413,7 +423,7 @@ def train(args):
                 null_kv = null_text_kv.expand(latent.shape[0], -1, -1)
 
                 # Decide which auxiliary losses to compute this step
-                use_ctc = (global_step % 25 == 0)
+                use_ctc = (ctc_every_steps > 0 and global_step % ctc_every_steps == 0)
 
                 # Flow matching loss; only keep hidden states on CTC steps.
                 fm_losses = flow.compute_loss(
@@ -480,14 +490,11 @@ def train(args):
                 cur_dur_adv_weight = dur_adv_weight * dur_disc_scale
                 dur_loss = dur_mse_loss + cur_dur_adv_weight * dur_adv_loss
 
-                # CTC alignment loss (every 25 steps, decaying weight)
-                # 278k~300k: 0.02 (stable), 300k~340k: 0.02→0.005, 340k+: 0.005
-                ctc_decay_start, ctc_decay_end = 300000, 1240000
-                ctc_weight_start, ctc_weight_end = 0.02, 0.005
+                # CTC alignment loss (configurable frequency + decaying weight)
                 if global_step < ctc_decay_start:
                     ctc_weight = ctc_weight_start
-                elif global_step > ctc_decay_end:
-                    ctc_weight = 0.0
+                elif global_step >= ctc_decay_end:
+                    ctc_weight = ctc_weight_end
                 else:
                     progress = (global_step - ctc_decay_start) / (ctc_decay_end - ctc_decay_start)
                     ctc_weight = ctc_weight_start + (ctc_weight_end - ctc_weight_start) * progress
@@ -571,6 +578,7 @@ def train(args):
                     "train/dur_disc_lr": disc_optimizer.param_groups[0]["lr"],
                     "train/ctc_loss": ctc_loss.item(),
                     "train/ctc_weight": ctc_weight,
+                    "train/ctc_applied": float(use_ctc),
                     "train/latent_d_loss": latent_d_loss.item(),
                     "train/latent_g_adv": latent_g_adv.item(),
                     "train/latent_g_fm": latent_g_fm.item(),

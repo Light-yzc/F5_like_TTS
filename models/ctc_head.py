@@ -59,6 +59,30 @@ class CTCAlignmentHead(nn.Module):
         log_probs = log_probs.permute(1, 0, 2)  # (T, B, num_classes)
         return log_probs
 
+    @staticmethod
+    def pack_target_hidden_states(
+        hidden_states: torch.Tensor,
+        target_mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Pack target frames to the front for each sample.
+
+        CTCLoss assumes the valid time axis occupies the first input_length
+        steps of each sequence. Our acoustic layout is [prompt | target | pad],
+        so we need to gather only target frames and make them contiguous.
+        """
+        B, _, D = hidden_states.shape
+        target_mask_bool = target_mask.bool()
+        input_lengths = target_mask_bool.sum(dim=1).long()
+        max_target_len = int(input_lengths.max().item()) if B > 0 else 0
+
+        packed_hidden = hidden_states.new_zeros(B, max_target_len, D)
+        for i in range(B):
+            cur_hidden = hidden_states[i][target_mask_bool[i]]
+            packed_hidden[i, :cur_hidden.shape[0]] = cur_hidden
+
+        return packed_hidden, input_lengths
+
     def loss(
         self,
         hidden_states: torch.Tensor,
@@ -78,18 +102,11 @@ class CTCAlignmentHead(nn.Module):
         Returns:
             ctc_loss: scalar loss value
         """
-        B, T, D = hidden_states.shape
+        packed_hidden, input_lengths = self.pack_target_hidden_states(hidden_states, target_mask)
+        if packed_hidden.shape[1] == 0:
+            return hidden_states.new_zeros(())
 
-        # Extract per-sample target frames and compute CTC loss
-        # We need to handle variable-length target regions per sample
-        input_lengths = target_mask.sum(dim=1).long()  # (B,) frame counts
-
-        # Mask: zero out non-target frames before projection
-        # This ensures only target region contributes to CTC
-        masked_hidden = hidden_states * target_mask.unsqueeze(-1)
-
-        # Project to log probs
-        log_probs = self.forward(masked_hidden)  # (T, B, num_classes)
+        log_probs = self.forward(packed_hidden)  # (T_target_max, B, num_classes)
 
         # CTC loss — input_lengths tells CTC where valid frames are
         loss = self.ctc_loss(

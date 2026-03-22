@@ -11,6 +11,7 @@ Usage:
 """
 
 import argparse
+import math
 import re
 import torch
 import torchaudio
@@ -140,6 +141,20 @@ def load_checkpoint(ckpt_path: str, device: torch.device, vocab_path_override: s
     return dit, text_encoder, dur_pred, flow, cfg, char_tokenizer
 
 
+def _resolve_duration_controls(
+    cfg: dict,
+    duration_scale: float | None = None,
+    duration_bias_sec: float | None = None,
+) -> tuple[float, float]:
+    model_cfg = cfg["model"]
+    scale = duration_scale if duration_scale is not None else model_cfg.get("duration_infer_scale", 1.0)
+    bias_sec = duration_bias_sec if duration_bias_sec is not None else model_cfg.get("duration_infer_bias_sec", 0.0)
+
+    if scale <= 0:
+        raise ValueError(f"duration_scale must be > 0, got {scale}")
+    return float(scale), float(bias_sec)
+
+
 @torch.no_grad()
 def inference(
     dit, text_encoder, dur_pred, flow, cfg,
@@ -153,6 +168,8 @@ def inference(
     vae_decode_fn=None,
     output_path: str = "output.wav",
     duration: float = None,
+    duration_scale: float = None,
+    duration_bias_sec: float = None,
     cfg_scale: float = None,
     n_steps: int = None,
     seed: int = None,
@@ -222,9 +239,19 @@ def inference(
         if duration is not None:
             T_gen = int(duration * latent_rate)
         else:
-            T_gen = int(dur_pred.predict_frames(text_kv, attention_mask, target_text_mask).item())
+            pred_frames = float(dur_pred.predict_frames(text_kv, attention_mask, target_text_mask).item())
+            dur_scale, dur_bias_sec = _resolve_duration_controls(cfg, duration_scale, duration_bias_sec)
+            bias_frames = int(round(dur_bias_sec * latent_rate))
+            T_gen = int(math.ceil(pred_frames * dur_scale)) + bias_frames
             T_gen = max(latent_rate, T_gen)  # At least 1 second
-            print(f"Predicted duration: {T_gen / latent_rate:.2f}s ({T_gen} frames)")
+            print(
+                f"Predicted duration: {pred_frames / latent_rate:.2f}s ({pred_frames:.1f} frames)"
+            )
+            if dur_scale != 1.0 or bias_frames != 0:
+                print(
+                    f"Adjusted duration: {T_gen / latent_rate:.2f}s ({T_gen} frames) "
+                    f"[scale={dur_scale:.3f}, bias_sec={dur_bias_sec:.3f}]"
+                )
 
         # --- 4. Flow Matching sampling ---
         gen_latent = flow.sample(
@@ -269,6 +296,8 @@ def inference_long(
     vae_decode_fn=None,
     output_path: str = "output.wav",
     duration: float = None,
+    duration_scale: float = None,
+    duration_bias_sec: float = None,
     cfg_scale: float = None,
     n_steps: int = None,
     seed: int = None,
@@ -299,6 +328,8 @@ def inference_long(
             vae_decode_fn=vae_decode_fn,
             output_path=output_path,
             duration=duration,
+            duration_scale=duration_scale,
+            duration_bias_sec=duration_bias_sec,
             cfg_scale=cfg_scale,
             n_steps=n_steps,
             seed=seed,
@@ -346,6 +377,8 @@ def inference_long(
             tts_language=tts_language,
             char_tokenizer=char_tokenizer,
             duration=seg_duration,
+            duration_scale=duration_scale,
+            duration_bias_sec=duration_bias_sec,
             cfg_scale=cfg_scale,
             n_steps=n_steps,
             seed=seed,
@@ -377,6 +410,8 @@ def _inference_core(
     tts_language: str = "ZH",
     char_tokenizer: CharTokenizer = None,
     duration: float = None,
+    duration_scale: float = None,
+    duration_bias_sec: float = None,
     cfg_scale: float = None,
     n_steps: int = None,
     seed: int = None,
@@ -413,9 +448,19 @@ def _inference_core(
         if duration is not None:
             T_gen = int(duration * latent_rate)
         else:
-            T_gen = int(dur_pred.predict_frames(text_kv, attention_mask, target_text_mask).item())
+            pred_frames = float(dur_pred.predict_frames(text_kv, attention_mask, target_text_mask).item())
+            dur_scale, dur_bias_sec = _resolve_duration_controls(cfg, duration_scale, duration_bias_sec)
+            bias_frames = int(round(dur_bias_sec * latent_rate))
+            T_gen = int(math.ceil(pred_frames * dur_scale)) + bias_frames
             T_gen = max(latent_rate, T_gen)
-            print(f"Predicted duration: {T_gen / latent_rate:.2f}s ({T_gen} frames)")
+            print(
+                f"Predicted duration: {pred_frames / latent_rate:.2f}s ({pred_frames:.1f} frames)"
+            )
+            if dur_scale != 1.0 or bias_frames != 0:
+                print(
+                    f"Adjusted duration: {T_gen / latent_rate:.2f}s ({T_gen} frames) "
+                    f"[scale={dur_scale:.3f}, bias_sec={dur_bias_sec:.3f}]"
+                )
 
         gen_latent = flow.sample(
             dit_model=dit,
@@ -445,6 +490,8 @@ if __name__ == "__main__":
     parser.add_argument("--tts_language", type=str, default="ZH", help="Language of the TTS text (ZH, JA, EN)")
     parser.add_argument("--output", type=str, default="output.wav")
     parser.add_argument("--duration", type=float, default=None, help="Override duration in seconds")
+    parser.add_argument("--duration_scale", type=float, default=None, help="Multiply predicted duration before sampling")
+    parser.add_argument("--duration_bias_sec", type=float, default=None, help="Add a fixed duration margin in seconds after scaling")
     parser.add_argument("--cfg_scale", type=float, default=None)
     parser.add_argument("--n_steps", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None)
@@ -469,6 +516,8 @@ if __name__ == "__main__":
         char_tokenizer=char_tokenizer,
         output_path=args.output,
         duration=args.duration,
+        duration_scale=args.duration_scale,
+        duration_bias_sec=args.duration_bias_sec,
         cfg_scale=args.cfg_scale,
         n_steps=args.n_steps,
         seed=args.seed,
