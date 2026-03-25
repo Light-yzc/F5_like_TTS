@@ -83,12 +83,12 @@ training:
   log_every_steps: 25
   infer_every_steps: 2000
   save_every_steps: 2000
-  ctc_every_steps: 5
+  ctc_every_steps: 100
   ctc_weight_start: 0.03
   ctc_weight_end: 0.01
   ctc_decay_start: 0
   ctc_decay_end: 750000
-  attention_prior_enabled: true
+  attention_prior_enabled: false
   attention_prior_sigma: 0.45
   attention_prior_weight: 0.005
   attention_prior_every_steps: 1
