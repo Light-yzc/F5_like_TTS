@@ -11,7 +11,9 @@ Usage:
 """
 
 import argparse
+import importlib
 import math
+import os
 import re
 import torch
 import torchaudio
@@ -63,13 +65,40 @@ def split_text(text: str, min_len: int = 8) -> list[str]:
 
     return merged
 
-def load_checkpoint(ckpt_path: str, device: torch.device, vocab_path_override: str = None, lora_path: str = None):
+
+def _ensure_torch_utils_loaded() -> None:
+    """
+    Work around environments where torch serialization is available but
+    torch._utils has not been attached to the torch package yet.
+    """
+    if hasattr(torch, "_utils"):
+        return
+    try:
+        importlib.import_module("torch._utils")
+    except Exception as exc:
+        raise RuntimeError(
+            "PyTorch environment is incomplete: failed to import `torch._utils` before "
+            "loading the checkpoint. In Colab, restart the runtime or reinstall matching "
+            "`torch`, `torchvision`, and `torchaudio` versions."
+        ) from exc
+
+
+def load_checkpoint(
+    ckpt_path: str,
+    device: torch.device,
+    vocab_path: str = None,
+    vocab_path_override: str = None,
+    lora_path: str = None,
+):
     """Load checkpoint and reconstruct models.
     
     Args:
+        vocab_path: path to char vocab JSON.
+        vocab_path_override: backward-compatible alias for vocab_path.
         lora_path: optional path to PEFT LoRA adapter directory.
                    If provided, loads LoRA weights on top of the base DiT.
     """
+    _ensure_torch_utils_loaded()
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
     cfg = ckpt["config"]
     model_cfg = cfg["model"]
@@ -95,17 +124,16 @@ def load_checkpoint(ckpt_path: str, device: torch.device, vocab_path_override: s
     dit.eval()
 
     # Load char vocab
-    import os
-    vocab_path = ckpt.get("vocab_path", vocab_path_override)
-    if vocab_path and os.path.exists(vocab_path):
-        char_tokenizer = CharTokenizer.load(vocab_path)
+    resolved_vocab_path = vocab_path_override or vocab_path
+    if resolved_vocab_path and os.path.exists(resolved_vocab_path):
+        char_tokenizer = CharTokenizer.load(resolved_vocab_path)
     else:
         # Fallback: try common paths
         for p in ["data/char_vocab.json", "char_vocab.json"]:
             if os.path.exists(p):
-                vocab_path = p
+                resolved_vocab_path = p
                 break
-        char_tokenizer = CharTokenizer.load(vocab_path) if vocab_path else CharTokenizer()
+        char_tokenizer = CharTokenizer.load(resolved_vocab_path) if resolved_vocab_path else CharTokenizer()
 
     text_encoder = F5TextEncoder(
         vocab_size=max(model_cfg.get("text_encoder_vocab_size", 16384),
@@ -502,7 +530,7 @@ if __name__ == "__main__":
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dit, text_encoder, dur_pred, flow, cfg, char_tokenizer = load_checkpoint(
-        args.checkpoint, device, vocab_path_override=args.vocab, lora_path=args.lora,
+        args.checkpoint, device, vocab_path=args.vocab, lora_path=args.lora,
     )
 
     infer_fn = inference_long if args.split else inference
