@@ -112,6 +112,9 @@ def load_checkpoint(
         heads=model_cfg["heads"],
         head_dim=model_cfg["head_dim"],
         ff_mult=model_cfg["ff_mult"],
+        use_text_expand=model_cfg.get("use_text_expand", False),
+        use_text_expand_pos_emb=model_cfg.get("use_text_expand_pos_emb", False),
+        text_expand_pos_emb_scale=model_cfg.get("text_expand_pos_emb_scale", 1.0),
     ).to(device)
     dit.load_state_dict(ckpt["dit"], strict=False)
 

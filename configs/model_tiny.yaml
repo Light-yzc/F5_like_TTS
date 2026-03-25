@@ -13,6 +13,9 @@ model:
   heads: 10
   head_dim: 64
   ff_mult: 2.5
+  use_text_expand: true
+  use_text_expand_pos_emb: true
+  text_expand_pos_emb_scale: 1
 
   # F5-like Text Encoder
   # Approx params: ~19.8M

@@ -351,6 +351,8 @@ class DiT(nn.Module):
         ff_mult: float = 2.5,
         max_seq_len: int = 8192,
         use_text_expand: bool = False,
+        use_text_expand_pos_emb: bool = False,
+        text_expand_pos_emb_scale: float = 1.0,
     ):
         super().__init__()
         self.latent_dim = latent_dim
@@ -358,12 +360,15 @@ class DiT(nn.Module):
         self.depth = depth
         self.gradient_checkpointing = False  # set via enable_gradient_checkpointing()
         self.use_text_expand = use_text_expand
+        self.use_text_expand_pos_emb = use_text_expand_pos_emb
+        self.text_expand_pos_emb_scale = text_expand_pos_emb_scale
 
         # Input projection: [x_t ∥ prompt_mask] → dit_dim
         self.proj_in = nn.Linear(latent_dim + 1, dit_dim)
         
         # Absolute Audio Positional Embedding (Crucial since Cross-Attention uses pure content now)
         self.audio_pos_emb = SinusoidalPositionalEmbedding(dit_dim, max_seq_len)
+        self.text_expand_pos_emb = SinusoidalPositionalEmbedding(dit_dim, max_seq_len)
 
         # Timestep embedding
         self.time_embed = TimestepEmbedding(256, dit_dim)
@@ -464,6 +469,10 @@ class DiT(nn.Module):
         # Optionally expand text tokens to frame length (nearest-neighbor repeat)
         if self.use_text_expand:
             text_kv, text_mask = self.expand_text_to_frames(text_kv, text_mask, T)
+            if self.use_text_expand_pos_emb:
+                text_kv = text_kv + self.text_expand_pos_emb_scale * (
+                    self.text_expand_pos_emb.pe[:, :T].to(device=text_kv.device, dtype=text_kv.dtype)
+                )
         L_text = text_kv.shape[1]
 
         # Concatenate prompt mask as extra channel
