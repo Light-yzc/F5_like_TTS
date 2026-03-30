@@ -72,7 +72,7 @@ audio:
   prompt_ratio_max: 0.5
 
 wandb:
-  project: "vae_dit_tts_tiny_l4"
+  project: "vae_dit_tts_tiny_v2"
   mode: "online"
 
 training:
@@ -94,7 +94,7 @@ training:
   ctc_weight_end: 0.02
   ctc_decay_start: 100000
   ctc_decay_end: 750000
-  attention_prior_enabled: true
+  attention_prior_enabled: false
   attention_prior_sigma: 0.3
   attention_prior_weight: 0.015
   attention_prior_every_steps: 1

@@ -144,7 +144,7 @@ def train(args):
     wandb.login()
     # Only resume wandb run when resuming training from checkpoint
     wandb_kwargs = {
-        "project": wandb_cfg.get("project", "vae_dit_tts_f5_text_enc_v3_fix_ctc_gan"),
+        "project": wandb_cfg.get("project", "vae_dit_tts_tiny"),
         "config": cfg,
     }
     if "mode" in wandb_cfg:
@@ -203,7 +203,7 @@ def train(args):
     dur_disc_start_step = cfg["model"].get("duration_disc_start_step", 0)
     dur_disc_warmup_steps = cfg["model"].get("duration_disc_warmup_steps", 0)
     dur_disc = DurationDiscriminator(
-        text_dim=model_cfg.get("text_enc_dim", cfg["model"]["dit_dim"]),
+        text_dim=cfg["model"].get("text_enc_dim", cfg["model"]["dit_dim"]),
         hidden_dim=cfg["model"].get("duration_disc_hidden", 256),
     ).to(device)
     disc_optimizer = bnb.optim.AdamW8bit(
