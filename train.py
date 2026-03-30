@@ -50,6 +50,7 @@ def load_config(path: str) -> dict:
 def build_models(cfg: dict, device: torch.device, char_tokenizer: CharTokenizer = None):
     model_cfg = cfg["model"]
     dit_dim = model_cfg["dit_dim"]
+    text_enc_dim = model_cfg.get("text_enc_dim", dit_dim)
 
     # DiT (with cross-attention + RoPE + AdaLN gate)
     dit = DiT(
@@ -62,21 +63,26 @@ def build_models(cfg: dict, device: torch.device, char_tokenizer: CharTokenizer 
         use_text_expand=model_cfg.get("use_text_expand", False),
         use_text_expand_pos_emb=model_cfg.get("use_text_expand_pos_emb", False),
         text_expand_pos_emb_scale=model_cfg.get("text_expand_pos_emb_scale", 1.0),
+        text_enc_dim=text_enc_dim,
+        num_cross_attn=model_cfg.get("num_cross_attn", 1),
     ).to(device)
 
     # F5-like Text Encoder (character-level, fully trainable)
     vocab_size = model_cfg.get("text_encoder_vocab_size", 16384)
     text_encoder = F5TextEncoder(
         vocab_size=max(vocab_size, char_tokenizer.vocab_size) if char_tokenizer else vocab_size,
-        dim=dit_dim,
+        dim=text_enc_dim,
         depth=model_cfg.get("text_conv_depth", 4),
         kernel_size=model_cfg.get("text_conv_kernel", 7),
         ff_mult=model_cfg.get("text_conv_ff_mult", 4),
+        transformer_depth=model_cfg.get("text_transformer_depth", 0),
+        transformer_heads=model_cfg.get("text_transformer_heads", 8),
+        transformer_ff_mult=model_cfg.get("text_transformer_ff_mult", 2.5),
     ).to(device)
 
-    # Duration Predictor (input dim = dit_dim, same as F5TextEncoder output)
+    # Duration Predictor (input dim = text_enc_dim, from text encoder output)
     dur_pred = DurationPredictor(
-        text_dim=dit_dim,
+        text_dim=text_enc_dim,
         hidden_dim=model_cfg["duration_hidden_dim"],
         num_layers=model_cfg["duration_num_layers"],
         nhead=model_cfg.get("duration_nhead", 8),
@@ -197,7 +203,7 @@ def train(args):
     dur_disc_start_step = cfg["model"].get("duration_disc_start_step", 0)
     dur_disc_warmup_steps = cfg["model"].get("duration_disc_warmup_steps", 0)
     dur_disc = DurationDiscriminator(
-        text_dim=cfg["model"]["dit_dim"],
+        text_dim=model_cfg.get("text_enc_dim", cfg["model"]["dit_dim"]),
         hidden_dim=cfg["model"].get("duration_disc_hidden", 256),
     ).to(device)
     disc_optimizer = bnb.optim.AdamW8bit(
@@ -287,8 +293,9 @@ def train(args):
     # AMP
     scaler = GradScaler('cuda', enabled=train_cfg.get("fp16", True))
 
-    # Null condition for CFG training
-    null_text_kv = torch.zeros(1, 1, cfg["model"]["dit_dim"], device=device)
+    # Null condition for CFG training (must match text_enc_dim, not dit_dim)
+    text_enc_dim = cfg["model"].get("text_enc_dim", cfg["model"]["dit_dim"])
+    null_text_kv = torch.zeros(1, 1, text_enc_dim, device=device)
 
     # Resume from checkpoint
     global_step = 0

@@ -1,28 +1,34 @@
-# VAE-DiT TTS — Tiny Config (~120M main trainable params)
+# VAE-DiT TTS — Tiny Config (~108M main trainable params)
 
 vae:
   model_path: "/content/F5_like_TTS/model_files/vae"
   precision: "fp16"
 
 model:
-  # DiT
-  # Approx params: ~89.6M
+  # DiT (depth=10, dual cross-attention per layer)
+  # Approx params: ~80M DiT + ~18M Text Encoder
   latent_dim: 64
   dit_dim: 640
-  depth: 14
+  depth: 10
   heads: 10
   head_dim: 64
   ff_mult: 2.5
+  num_cross_attn: 2
   use_text_expand: true
   use_text_expand_pos_emb: true
   text_expand_pos_emb_scale: 1
 
-  # F5-like Text Encoder
-  # Approx params: ~19.8M
+  # F5-like Text Encoder (decoupled dim=512, ConvNeXt + Transformer)
+  # ConvNeXt: local phonetics, Transformer: global context for character disambiguation
+  # Approx params: ~26M
+  text_enc_dim: 512
   text_encoder_vocab_size: 128
-  text_conv_depth: 8
-  text_conv_kernel: 9
-  text_conv_ff_mult: 3
+  text_conv_depth: 6
+  text_conv_kernel: 7
+  text_conv_ff_mult: 2
+  text_transformer_depth: 6
+  text_transformer_heads: 8
+  text_transformer_ff_mult: 2.5
 
   # Duration Predictor
   duration_hidden_dim: 384
@@ -54,8 +60,8 @@ model:
   default_cfg_scale: 3.0
   default_infer_steps: 30
   sway_coef: -1.0
-  duration_infer_scale: 1.08
-  duration_infer_bias_sec: 0.12
+  duration_infer_scale: 1.12
+  duration_infer_bias_sec: 0.15
 
 audio:
   sample_rate: 48000
@@ -83,15 +89,15 @@ training:
   log_every_steps: 25
   infer_every_steps: 2000
   save_every_steps: 2000
-  ctc_every_steps: 100
-  ctc_weight_start: 0.03
-  ctc_weight_end: 0.01
-  ctc_decay_start: 0
+  ctc_every_steps: 65
+  ctc_weight_start: 0.05
+  ctc_weight_end: 0.02
+  ctc_decay_start: 100000
   ctc_decay_end: 750000
-  attention_prior_enabled: false
-  attention_prior_sigma: 0.45
-  attention_prior_weight: 0.005
+  attention_prior_enabled: true
+  attention_prior_sigma: 0.3
+  attention_prior_weight: 0.015
   attention_prior_every_steps: 1
-  attention_prior_layer_indices: [8, 9, 10]
-  attention_prior_start_step: 300000
+  attention_prior_layer_indices: [4, 5, 6, 7, 8, 9]
+  attention_prior_start_step: 0
   attention_prior_warmup_steps: 10000

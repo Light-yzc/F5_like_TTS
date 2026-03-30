@@ -248,24 +248,39 @@ class DiTBlock(nn.Module):
     """
     DiT Block with:
       1. AdaLN-Zero + Self-Attention (RoPE)
-      2. Cross-Attention (text conditioning)
+      2. N × Cross-Attention (text conditioning, configurable 1 or 2 layers)
       3. AdaLN-Zero + FFN (SiLU-gated)
+
+    When num_cross_attn=2:
+      - Cross-Attn-1: coarse content-based matching
+      - Cross-Attn-2: fine-grained phoneme-frame alignment
     """
 
-    def __init__(self, dim: int, heads: int, head_dim: int = 64, ff_mult: float = 2.5):
+    def __init__(self, dim: int, heads: int, head_dim: int = 64, ff_mult: float = 2.5,
+                 num_cross_attn: int = 1):
         super().__init__()
-        # AdaLN-Zero: 8 modulation values
-        #   self-attn: shift_sa, scale_sa, gate_sa
-        #   cross-attn: scale_ca, gate_ca
-        #   ffn:        shift_ff, scale_ff, gate_ff
-        self.scale_shift_table = nn.Parameter(torch.zeros(1, 8, dim))
+        self.num_cross_attn = num_cross_attn
+
+        # AdaLN-Zero modulation values:
+        #   self-attn: shift_sa, scale_sa, gate_sa  (3)
+        #   cross-attn: scale_ca, gate_ca  (2 per cross-attn layer)
+        #   ffn: shift_ff, scale_ff, gate_ff  (3)
+        num_adaln = 6 + 2 * num_cross_attn  # 8 for single, 10 for double
+        self.num_adaln = num_adaln
+        self.scale_shift_table = nn.Parameter(torch.zeros(1, num_adaln, dim))
+
         # Self-Attention
         self.self_attn_norm = RMSNorm(dim)
         self.self_attn = MultiHeadAttention(dim, heads, head_dim, is_cross=False)
 
-        # Cross-Attention
-        self.cross_attn_norm = RMSNorm(dim)
-        self.cross_attn = MultiHeadAttention(dim, heads, head_dim, is_cross=True)
+        # Cross-Attention layer(s) — independent Q/K/V projections per layer
+        self.cross_attn_norms = nn.ModuleList([
+            RMSNorm(dim) for _ in range(num_cross_attn)
+        ])
+        self.cross_attns = nn.ModuleList([
+            MultiHeadAttention(dim, heads, head_dim, is_cross=True)
+            for _ in range(num_cross_attn)
+        ])
 
         # FeedForward
         self.ff_norm = RMSNorm(dim)
@@ -285,32 +300,44 @@ class DiTBlock(nn.Module):
         diagonal_bias: Optional[torch.Tensor] = None,
         return_cross_attn_weights: bool = False,
     ) -> torch.Tensor:
-        # AdaLN modulation parameters (8 values)
-        shift_sa, scale_sa, gate_sa, scale_ca, gate_ca, shift_ff, scale_ff, gate_ff = (
+        # AdaLN modulation parameters
+        modulations = (
             self.scale_shift_table + time_emb.unsqueeze(1)
-        ).chunk(8, dim=1)
-        # Each: (B, 1, dim)
+        ).chunk(self.num_adaln, dim=1)
+        # Layout: [shift_sa, scale_sa, gate_sa, scale_ca1, gate_ca1, ..., scale_caN, gate_caN, shift_ff, scale_ff, gate_ff]
+        shift_sa, scale_sa, gate_sa = modulations[0], modulations[1], modulations[2]
+        # Cross-attn modulations: pairs of (scale, gate) for each cross-attn layer
+        ca_modulations = []
+        for i in range(self.num_cross_attn):
+            idx = 3 + i * 2
+            ca_modulations.append((modulations[idx], modulations[idx + 1]))  # (scale_ca_i, gate_ca_i)
+        ff_start = 3 + self.num_cross_attn * 2
+        shift_ff, scale_ff, gate_ff = modulations[ff_start], modulations[ff_start + 1], modulations[ff_start + 2]
 
         # 1. Self-Attention with AdaLN-Zero (mask out padding frames)
         h = self.self_attn_norm(x) * (1 + scale_sa) + shift_sa
         h = self.self_attn(h, rope_cos=rope_cos, rope_sin=rope_sin, kv_mask=padding_mask)
         x = x + h * gate_sa
 
-        # 2. Cross-Attention with AdaLN scale + gate
-        h = self.cross_attn_norm(x) * (1 + scale_ca)
-        cross_attn_result = self.cross_attn(
-            h, kv=text_kv, kv_mask=text_mask,
-            rope_cos=rope_cos, rope_sin=rope_sin,
-            kv_rope_cos=text_rope_cos, kv_rope_sin=text_rope_sin,
-            diagonal_bias=diagonal_bias,
-            return_attn_weights=return_cross_attn_weights,
-        )
-        if return_cross_attn_weights:
-            h, attn_weights = cross_attn_result
-        else:
-            h = cross_attn_result
-            attn_weights = None
-        x = x + h * gate_ca
+        # 2. Cross-Attention layer(s) with AdaLN scale + gate
+        attn_weights = None
+        for i in range(self.num_cross_attn):
+            scale_ca, gate_ca = ca_modulations[i]
+            h = self.cross_attn_norms[i](x) * (1 + scale_ca)
+            # Only return attn weights from the last cross-attn layer
+            want_weights = return_cross_attn_weights and (i == self.num_cross_attn - 1)
+            cross_attn_result = self.cross_attns[i](
+                h, kv=text_kv, kv_mask=text_mask,
+                rope_cos=rope_cos, rope_sin=rope_sin,
+                kv_rope_cos=text_rope_cos, kv_rope_sin=text_rope_sin,
+                diagonal_bias=diagonal_bias,
+                return_attn_weights=want_weights,
+            )
+            if want_weights:
+                h, attn_weights = cross_attn_result
+            else:
+                h = cross_attn_result
+            x = x + h * gate_ca
 
         # 3. FFN with AdaLN-Zero
         h = self.ff_norm(x) * (1 + scale_ff) + shift_ff
@@ -353,6 +380,8 @@ class DiT(nn.Module):
         use_text_expand: bool = False,
         use_text_expand_pos_emb: bool = False,
         text_expand_pos_emb_scale: float = 1.0,
+        text_enc_dim: int = None,
+        num_cross_attn: int = 1,
     ):
         super().__init__()
         self.latent_dim = latent_dim
@@ -362,6 +391,18 @@ class DiT(nn.Module):
         self.use_text_expand = use_text_expand
         self.use_text_expand_pos_emb = use_text_expand_pos_emb
         self.text_expand_pos_emb_scale = text_expand_pos_emb_scale
+
+        # Text KV Projection Bridge: text_enc_dim → dit_dim
+        # Decouples text encoder dimension from DiT internal dimension
+        text_enc_dim = text_enc_dim or dit_dim
+        if text_enc_dim != dit_dim:
+            self.text_kv_proj = nn.Sequential(
+                nn.Linear(text_enc_dim, dit_dim),
+                nn.SiLU(),
+                nn.Linear(dit_dim, dit_dim),
+            )
+        else:
+            self.text_kv_proj = None
 
         # Input projection: [x_t ∥ prompt_mask] → dit_dim
         self.proj_in = nn.Linear(latent_dim + 1, dit_dim)
@@ -376,9 +417,9 @@ class DiT(nn.Module):
         # Rotary position embedding
         self.rotary_emb = RotaryEmbedding(head_dim, max_seq_len)
 
-        # Transformer blocks
+        # Transformer blocks with configurable cross-attention count
         self.blocks = nn.ModuleList([
-            DiTBlock(dit_dim, heads, head_dim, ff_mult)
+            DiTBlock(dit_dim, heads, head_dim, ff_mult, num_cross_attn=num_cross_attn)
             for _ in range(depth)
         ])
 
@@ -465,6 +506,10 @@ class DiT(nn.Module):
         """
         B, T, D = x_t.shape
         ap_layer_set = set(ap_layer_indices or [])
+
+        # Project text features from text_enc_dim → dit_dim (if dimensions differ)
+        if self.text_kv_proj is not None:
+            text_kv = self.text_kv_proj(text_kv)
 
         # Optionally expand text tokens to frame length (nearest-neighbor repeat)
         if self.use_text_expand:

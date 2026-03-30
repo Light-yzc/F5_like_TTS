@@ -103,6 +103,7 @@ def load_checkpoint(
     cfg = ckpt["config"]
     model_cfg = cfg["model"]
     dit_dim = model_cfg["dit_dim"]
+    text_enc_dim = model_cfg.get("text_enc_dim", dit_dim)
 
     # Build models
     dit = DiT(
@@ -115,6 +116,8 @@ def load_checkpoint(
         use_text_expand=model_cfg.get("use_text_expand", False),
         use_text_expand_pos_emb=model_cfg.get("use_text_expand_pos_emb", False),
         text_expand_pos_emb_scale=model_cfg.get("text_expand_pos_emb_scale", 1.0),
+        text_enc_dim=text_enc_dim,
+        num_cross_attn=model_cfg.get("num_cross_attn", 1),
     ).to(device)
     dit.load_state_dict(ckpt["dit"], strict=False)
 
@@ -141,17 +144,20 @@ def load_checkpoint(
     text_encoder = F5TextEncoder(
         vocab_size=max(model_cfg.get("text_encoder_vocab_size", 16384),
                        char_tokenizer.vocab_size),
-        dim=dit_dim,
+        dim=text_enc_dim,
         depth=model_cfg.get("text_conv_depth", 4),
         kernel_size=model_cfg.get("text_conv_kernel", 7),
         ff_mult=model_cfg.get("text_conv_ff_mult", 4),
+        transformer_depth=model_cfg.get("text_transformer_depth", 0),
+        transformer_heads=model_cfg.get("text_transformer_heads", 8),
+        transformer_ff_mult=model_cfg.get("text_transformer_ff_mult", 2.5),
     ).to(device)
     if "text_encoder" in ckpt:
         text_encoder.load_state_dict(ckpt["text_encoder"])
     text_encoder.eval()
 
     dur_pred = DurationPredictor(
-        text_dim=dit_dim,
+        text_dim=text_enc_dim,
         hidden_dim=model_cfg["duration_hidden_dim"],
         num_layers=model_cfg["duration_num_layers"],
         nhead=model_cfg.get("duration_nhead", 8),
@@ -263,7 +269,7 @@ def inference(
         text_kv, text_mask = text_encoder(input_ids, attention_mask)
 
         # Null condition for CFG
-        null_text_kv = torch.zeros(1, 1, cfg["model"]["dit_dim"], device=device)
+        null_text_kv = torch.zeros(1, 1, cfg["model"].get("text_enc_dim", cfg["model"]["dit_dim"]), device=device)
         null_text_mask = torch.ones(1, 1, device=device)
 
         # --- 3. Determine generation length ---
@@ -473,7 +479,7 @@ def _inference_core(
 
         text_kv, text_mask = text_encoder(input_ids, attention_mask)
 
-        null_text_kv = torch.zeros(1, 1, cfg["model"]["dit_dim"], device=device)
+        null_text_kv = torch.zeros(1, 1, cfg["model"].get("text_enc_dim", cfg["model"]["dit_dim"]), device=device)
         null_text_mask = torch.ones(1, 1, device=device)
 
         if duration is not None:
