@@ -74,7 +74,7 @@ training:
   learning_rate: 1.5e-4
   weight_decay: 0.01
   warmup_steps: 5000
-  max_steps: 750000
+  max_steps: 1200000
   scheduler: cosine
   gradient_clip: 1.0
   fp16: true
@@ -87,7 +87,7 @@ training:
   ctc_weight_start: 0.03
   ctc_weight_end: 0.01
   ctc_decay_start: 0
-  ctc_decay_end: 750000
+  ctc_decay_end: 1200000
   attention_prior_enabled: false
   attention_prior_sigma: 0.45
   attention_prior_weight: 0.005
