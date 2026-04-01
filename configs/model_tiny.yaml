@@ -1,4 +1,4 @@
-# VAE-DiT TTS — Tiny Config (~120M main trainable params)
+# VAE-DiT TTS — Tiny Config (single CA + LARoPE)
 
 vae:
   model_path: "/content/F5_like_TTS/model_files/vae"
@@ -6,15 +6,15 @@ vae:
 
 model:
   # DiT
-  # Approx params: ~89.6M
+  # Old single-cross-attention architecture with LARoPE added in code.
   latent_dim: 64
   dit_dim: 640
   depth: 14
   heads: 10
   head_dim: 64
   ff_mult: 2.5
-  use_text_expand: true
-  use_text_expand_pos_emb: true
+  use_text_expand: false
+  use_text_expand_pos_emb: false
   text_expand_pos_emb_scale: 1
 
   # F5-like Text Encoder
@@ -66,7 +66,7 @@ audio:
   prompt_ratio_max: 0.5
 
 wandb:
-  project: "vae_dit_tts_tiny_l4"
+  project: "vae_dit_tts_tiny_single_ca_larope"
   mode: "online"
 
 training:

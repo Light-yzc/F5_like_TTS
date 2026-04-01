@@ -38,7 +38,7 @@ class RMSNorm(nn.Module):
 
 
 class RotaryEmbedding(nn.Module):
-    """Rotary Position Embedding (RoPE)."""
+    """Rotary Position Embedding (RoPE) with optional LARoPE mode."""
 
     def __init__(self, dim: int, max_seq_len: int = 8192, theta: float = 10000.0):
         super().__init__()
@@ -47,7 +47,26 @@ class RotaryEmbedding(nn.Module):
         self.max_seq_len = max_seq_len
 
     def forward(self, seq_len: int, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
+        """Standard RoPE with absolute position indices."""
         t = torch.arange(seq_len, device=device, dtype=self.inv_freq.dtype)
+        freqs = torch.outer(t, self.inv_freq)
+        cos = freqs.cos()
+        sin = freqs.sin()
+        return cos, sin
+
+    def larope_forward(
+        self,
+        seq_len: int,
+        device: torch.device,
+        gamma: float = 10.0,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Length-Aware RoPE (LARoPE).
+
+        Maps both sequences into the same normalized range [0, gamma] so
+        cross-attention can keep a diagonal prior even when text/audio lengths differ.
+        """
+        t = gamma * torch.arange(seq_len, device=device, dtype=self.inv_freq.dtype) / seq_len
         freqs = torch.outer(t, self.inv_freq)
         cos = freqs.cos()
         sin = freqs.sin()
@@ -156,10 +175,11 @@ class MultiHeadAttention(nn.Module):
         v = self.v_proj(kv_input).view(B, -1, self.heads, self.head_dim).transpose(1, 2)
 
         if self.is_cross:
-            # [CRITICAL FIX]: DO NOT apply RoPE to Cross-Attention Q & K!
-            # Audio (T) and Text (L) represent different sequence domains with variable duration ratios.
-            # Independent RoPE destroyed the alignment by enforcing a heavy penalty when m != n.
-            pass
+            # Cross-attention uses LARoPE so text/audio positions share the same normalized range.
+            if rope_cos is not None:
+                q = apply_rotary_emb(q, rope_cos, rope_sin)
+            if kv_rope_cos is not None:
+                k = apply_rotary_emb(k, kv_rope_cos, kv_rope_sin)
         else:
             # Self-attn: shared RoPE for Q and K (temporal consistency within same domain)
             if rope_cos is not None:
@@ -280,8 +300,10 @@ class DiTBlock(nn.Module):
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
         padding_mask: Optional[torch.Tensor] = None,
-        text_rope_cos: Optional[torch.Tensor] = None,
-        text_rope_sin: Optional[torch.Tensor] = None,
+        larope_audio_cos: Optional[torch.Tensor] = None,
+        larope_audio_sin: Optional[torch.Tensor] = None,
+        larope_text_cos: Optional[torch.Tensor] = None,
+        larope_text_sin: Optional[torch.Tensor] = None,
         diagonal_bias: Optional[torch.Tensor] = None,
         return_cross_attn_weights: bool = False,
     ) -> torch.Tensor:
@@ -300,8 +322,8 @@ class DiTBlock(nn.Module):
         h = self.cross_attn_norm(x) * (1 + scale_ca)
         cross_attn_result = self.cross_attn(
             h, kv=text_kv, kv_mask=text_mask,
-            rope_cos=rope_cos, rope_sin=rope_sin,
-            kv_rope_cos=text_rope_cos, kv_rope_sin=text_rope_sin,
+            rope_cos=larope_audio_cos, rope_sin=larope_audio_sin,
+            kv_rope_cos=larope_text_cos, kv_rope_sin=larope_text_sin,
             diagonal_bias=diagonal_bias,
             return_attn_weights=return_cross_attn_weights,
         )
@@ -486,10 +508,11 @@ class DiT(nn.Module):
         # Timestep embedding
         time_emb = self.time_embed(timestep)  # (B, dit_dim)
 
-        # Audio-frame RoPE (length = T)
+        # Audio-frame RoPE (length = T) for self-attention
         rope_cos, rope_sin = self.rotary_emb(T, x.device)
-        # Text-token RoPE (independent, length = L_text)
-        text_rope_cos, text_rope_sin = self.rotary_emb(L_text, x.device)
+        # LARoPE for cross-attention: normalize audio/text positions into the same range.
+        larope_audio_cos, larope_audio_sin = self.rotary_emb.larope_forward(T, x.device, gamma=10.0)
+        larope_text_cos, larope_text_sin = self.rotary_emb.larope_forward(L_text, x.device, gamma=10.0)
 
         # Transformer blocks
         attn_weights = []
@@ -501,7 +524,8 @@ class DiT(nn.Module):
                 x = checkpoint(
                     block, x, time_emb, text_kv, text_mask,
                     rope_cos, rope_sin, padding_mask,
-                    text_rope_cos, text_rope_sin,
+                    larope_audio_cos, larope_audio_sin,
+                    larope_text_cos, larope_text_sin,
                     diag_bias,
                     use_reentrant=False,
                 )
@@ -509,7 +533,8 @@ class DiT(nn.Module):
                 block_out = block(
                     x, time_emb, text_kv, text_mask,
                     rope_cos, rope_sin, padding_mask,
-                    text_rope_cos, text_rope_sin,
+                    larope_audio_cos, larope_audio_sin,
+                    larope_text_cos, larope_text_sin,
                     diag_bias,
                     return_cross_attn_weights=want_attn,
                 )
