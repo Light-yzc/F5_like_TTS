@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import torch
 import torch.nn.functional as F
 from models.dit import DiT, DiTBlock, RMSNorm, TimestepEmbedding, RotaryEmbedding
+from models.F5_like_text_encoder import F5TextEncoder
 from models.duration_predictor import DurationPredictor
 from models.duration_discriminator import DurationDiscriminator
 from models.latent_discriminator import (
@@ -57,11 +58,45 @@ def test_dit_block():
     rope = RotaryEmbedding(64)
     cos, sin = rope(T, torch.device("cpu"))
 
+    larope_audio_cos, larope_audio_sin = rope.larope_forward(T, torch.device("cpu"))
     text_rope = RotaryEmbedding(64)
-    text_cos, text_sin = text_rope(20, torch.device("cpu"))
-    out = block(x, time_emb, text_kv, text_mask, cos, sin, None, text_cos, text_sin)
+    larope_text_cos, larope_text_sin = text_rope.larope_forward(20, torch.device("cpu"))
+    out = block(
+        x,
+        time_emb,
+        text_kv,
+        text_mask,
+        cos,
+        sin,
+        None,
+        larope_audio_cos,
+        larope_audio_sin,
+        larope_text_cos,
+        larope_text_sin,
+    )
     assert out.shape == (B, T, 256), f"DiTBlock shape mismatch: {out.shape}"
     print("✓ DiTBlock")
+
+
+def test_text_encoder_with_transformer():
+    encoder = F5TextEncoder(
+        vocab_size=128,
+        dim=256,
+        depth=4,
+        kernel_size=7,
+        ff_mult=3,
+        transformer_depth=2,
+        transformer_heads=8,
+        transformer_ff_mult=2.5,
+    )
+    input_ids = torch.randint(0, 128, (2, 24))
+    attention_mask = torch.ones(2, 24)
+    attention_mask[:, -3:] = 0
+
+    out, out_mask = encoder(input_ids, attention_mask)
+    assert out.shape == (2, 24, 256), f"text encoder shape mismatch: {out.shape}"
+    assert out_mask.shape == (2, 24), f"text encoder mask shape mismatch: {out_mask.shape}"
+    print("✓ F5TextEncoder + Transformer")
 
 
 def test_dit_full():
@@ -535,6 +570,7 @@ if __name__ == "__main__":
     test_rotary_embedding()
     test_timestep_embedding()
     test_dit_block()
+    test_text_encoder_with_transformer()
     test_dit_full()
     test_dit_backward()
     test_duration_predictor()

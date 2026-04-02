@@ -54,6 +54,9 @@ def build_models(cfg: dict, device: torch.device, char_tokenizer: CharTokenizer 
         heads=model_cfg["heads"],
         head_dim=model_cfg["head_dim"],
         ff_mult=model_cfg["ff_mult"],
+        use_text_expand=model_cfg.get("use_text_expand", False),
+        use_text_expand_pos_emb=model_cfg.get("use_text_expand_pos_emb", False),
+        text_expand_pos_emb_scale=model_cfg.get("text_expand_pos_emb_scale", 1.0),
     ).to(device)
 
     vocab_size = model_cfg.get("text_encoder_vocab_size", 16384)
@@ -63,6 +66,9 @@ def build_models(cfg: dict, device: torch.device, char_tokenizer: CharTokenizer 
         depth=model_cfg.get("text_conv_depth", 4),
         kernel_size=model_cfg.get("text_conv_kernel", 7),
         ff_mult=model_cfg.get("text_conv_ff_mult", 4),
+        transformer_depth=model_cfg.get("text_transformer_depth", 0),
+        transformer_heads=model_cfg.get("text_transformer_heads", 8),
+        transformer_ff_mult=model_cfg.get("text_transformer_ff_mult", 2.5),
     ).to(device)
 
     dur_pred = DurationPredictor(
@@ -111,7 +117,13 @@ def train_lora(args):
     ckpt = torch.load(args.base_ckpt, map_location=device, weights_only=False)
     dit.load_state_dict(ckpt["dit"], strict=False)
     if "text_encoder" in ckpt:
-        text_encoder.load_state_dict(ckpt["text_encoder"])
+        incompatible = text_encoder.load_state_dict(ckpt["text_encoder"], strict=False)
+        if incompatible.missing_keys or incompatible.unexpected_keys:
+            print(
+                "text_encoder: loaded with compatibility mode, "
+                f"missing={len(incompatible.missing_keys)}, "
+                f"unexpected={len(incompatible.unexpected_keys)}"
+            )
     dur_pred.load_state_dict(ckpt["dur_pred"], strict=False)
     del ckpt
     torch.cuda.empty_cache()

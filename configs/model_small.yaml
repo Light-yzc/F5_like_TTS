@@ -1,4 +1,4 @@
-# VAE-DiT TTS — Small Config (~150M total trainable params including discriminators)
+# VAE-DiT TTS — Small Config (~180M main params, single CA + LARoPE)
 
 vae:
   model_path: "/content/F5_like_TTS/model_files/vae"
@@ -6,20 +6,26 @@ vae:
 
 model:
   # DiT
-  # Approx params: ~115M
+  # Deeper than tiny for stronger latent modeling and coverage.
   latent_dim: 64
   dit_dim: 640
-  depth: 18
+  depth: 21
   heads: 10
   head_dim: 64
   ff_mult: 2.5
+  use_text_expand: false
+  use_text_expand_pos_emb: false
+  text_expand_pos_emb_scale: 1
 
   # F5-like Text Encoder
-  # Approx params: ~20M
+  # ConvNeXt for local phonetics + Transformer for global token coverage.
   text_encoder_vocab_size: 128
   text_conv_depth: 8
   text_conv_kernel: 9
   text_conv_ff_mult: 3
+  text_transformer_depth: 4
+  text_transformer_heads: 8
+  text_transformer_ff_mult: 2.5
 
   # Duration Predictor
   # Approx params: ~10M with current implementation
@@ -37,8 +43,8 @@ model:
   duration_disc_warmup_steps: 3000
 
   # Latent GAN
-  latent_disc_hidden: 512
-  latent_disc_scales: 4
+  latent_disc_hidden: 640
+  latent_disc_scales: 5
   latent_adv_weight: 0.1
   latent_fm_weight: 0.5
   latent_gan_t_threshold: 0.5
@@ -63,12 +69,16 @@ audio:
   prompt_ratio_min: 0.2
   prompt_ratio_max: 0.5
 
+wandb:
+  project: "vae_dit_tts_small_single_ca_larope"
+  mode: "online"
+
 training:
-  batch_size: 11
+  batch_size: 8
   learning_rate: 1.5e-4
   weight_decay: 0.01
   warmup_steps: 5000
-  max_steps: 750000
+  max_steps: 1200000
   scheduler: cosine
   gradient_clip: 1.0
   fp16: true
@@ -78,4 +88,11 @@ training:
   ctc_weight_start: 0.03
   ctc_weight_end: 0.01
   ctc_decay_start: 0
-  ctc_decay_end: 750000
+  ctc_decay_end: 1200000
+  attention_prior_enabled: false
+  attention_prior_sigma: 0.45
+  attention_prior_weight: 0.005
+  attention_prior_every_steps: 1
+  attention_prior_layer_indices: [12, 13, 14]
+  attention_prior_start_step: 300000
+  attention_prior_warmup_steps: 10000

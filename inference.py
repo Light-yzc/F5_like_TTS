@@ -145,9 +145,18 @@ def load_checkpoint(
         depth=model_cfg.get("text_conv_depth", 4),
         kernel_size=model_cfg.get("text_conv_kernel", 7),
         ff_mult=model_cfg.get("text_conv_ff_mult", 4),
+        transformer_depth=model_cfg.get("text_transformer_depth", 0),
+        transformer_heads=model_cfg.get("text_transformer_heads", 8),
+        transformer_ff_mult=model_cfg.get("text_transformer_ff_mult", 2.5),
     ).to(device)
     if "text_encoder" in ckpt:
-        text_encoder.load_state_dict(ckpt["text_encoder"])
+        incompatible = text_encoder.load_state_dict(ckpt["text_encoder"], strict=False)
+        if incompatible.missing_keys or incompatible.unexpected_keys:
+            print(
+                "Loaded text encoder with compatibility mode: "
+                f"missing={len(incompatible.missing_keys)}, "
+                f"unexpected={len(incompatible.unexpected_keys)}"
+            )
     text_encoder.eval()
 
     dur_pred = DurationPredictor(

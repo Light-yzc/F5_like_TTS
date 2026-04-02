@@ -72,6 +72,9 @@ def build_models(cfg: dict, device: torch.device, char_tokenizer: CharTokenizer 
         depth=model_cfg.get("text_conv_depth", 4),
         kernel_size=model_cfg.get("text_conv_kernel", 7),
         ff_mult=model_cfg.get("text_conv_ff_mult", 4),
+        transformer_depth=model_cfg.get("text_transformer_depth", 0),
+        transformer_heads=model_cfg.get("text_transformer_heads", 8),
+        transformer_ff_mult=model_cfg.get("text_transformer_ff_mult", 2.5),
     ).to(device)
 
     # Duration Predictor (input dim = dit_dim, same as F5TextEncoder output)
@@ -338,7 +341,13 @@ def train(args):
                     f"new_classes={current_ctc['proj.weight'].shape[0]}"
                 )
         if "text_encoder" in ckpt:
-            text_encoder.load_state_dict(ckpt["text_encoder"])
+            incompatible = text_encoder.load_state_dict(ckpt["text_encoder"], strict=False)
+            if incompatible.missing_keys or incompatible.unexpected_keys:
+                print(
+                    "text_encoder: loaded with compatibility mode, "
+                    f"missing={len(incompatible.missing_keys)}, "
+                    f"unexpected={len(incompatible.unexpected_keys)}"
+                )
         # Load dur_pred with shape-safe filtering (handles kernel/arch changes)
         if "dur_pred" in ckpt:
             saved = ckpt["dur_pred"]
