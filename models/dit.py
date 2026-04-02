@@ -164,6 +164,7 @@ class MultiHeadAttention(nn.Module):
         kv_mask: Optional[torch.Tensor] = None,
         kv_rope_cos: Optional[torch.Tensor] = None,
         kv_rope_sin: Optional[torch.Tensor] = None,
+        kv_token_weights: Optional[torch.Tensor] = None,
         diagonal_bias: Optional[torch.Tensor] = None,
         return_attn_weights: bool = False,
     ) -> torch.Tensor:
@@ -185,6 +186,11 @@ class MultiHeadAttention(nn.Module):
             if rope_cos is not None:
                 q = apply_rotary_emb(q, rope_cos, rope_sin)
                 k = apply_rotary_emb(k, rope_cos, rope_sin)
+
+        if self.is_cross and kv_token_weights is not None:
+            token_scale = kv_token_weights.to(dtype=q.dtype).unsqueeze(1).unsqueeze(-1)
+            k = k * token_scale
+            v = v * token_scale
 
         # Attention with optional mask
         attn_mask = None
@@ -304,6 +310,7 @@ class DiTBlock(nn.Module):
         larope_audio_sin: Optional[torch.Tensor] = None,
         larope_text_cos: Optional[torch.Tensor] = None,
         larope_text_sin: Optional[torch.Tensor] = None,
+        cross_attn_kv_weights: Optional[torch.Tensor] = None,
         diagonal_bias: Optional[torch.Tensor] = None,
         return_cross_attn_weights: bool = False,
     ) -> torch.Tensor:
@@ -324,6 +331,7 @@ class DiTBlock(nn.Module):
             h, kv=text_kv, kv_mask=text_mask,
             rope_cos=larope_audio_cos, rope_sin=larope_audio_sin,
             kv_rope_cos=larope_text_cos, kv_rope_sin=larope_text_sin,
+            kv_token_weights=cross_attn_kv_weights,
             diagonal_bias=diagonal_bias,
             return_attn_weights=return_cross_attn_weights,
         )
@@ -473,6 +481,7 @@ class DiT(nn.Module):
         padding_mask: Optional[torch.Tensor] = None,
         return_hidden: bool = False,
         ap_layer_indices: Optional[list[int]] = None,
+        cross_attn_kv_weights: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Args:
@@ -484,6 +493,7 @@ class DiT(nn.Module):
             padding_mask:  (B, T)             1=valid, 0=pad (for self-attention)
             return_hidden: bool               if True, also return last block hidden states
             ap_layer_indices: list[int]|None  if set, return cross-attn weights from these layers
+            cross_attn_kv_weights:(B, L)|None optional inference-time token weights for cross-attn K/V
         """
         B, T, D = x_t.shape
         ap_layer_set = set(ap_layer_indices or [])
@@ -526,6 +536,7 @@ class DiT(nn.Module):
                     rope_cos, rope_sin, padding_mask,
                     larope_audio_cos, larope_audio_sin,
                     larope_text_cos, larope_text_sin,
+                    cross_attn_kv_weights,
                     diag_bias,
                     use_reentrant=False,
                 )
@@ -535,6 +546,7 @@ class DiT(nn.Module):
                     rope_cos, rope_sin, padding_mask,
                     larope_audio_cos, larope_audio_sin,
                     larope_text_cos, larope_text_sin,
+                    cross_attn_kv_weights,
                     diag_bias,
                     return_cross_attn_weights=want_attn,
                 )

@@ -184,6 +184,60 @@ class FlowMatching:
 
         return t_span
 
+    def _build_inference_cross_attn_kv_weights(
+        self,
+        text_mask: torch.Tensor,
+        target_text_mask: Optional[torch.Tensor],
+        step_index: int,
+        n_steps: int,
+        strength: float,
+        sigma: float,
+        decay_power: float,
+        early_stop_ratio: float,
+    ) -> Optional[torch.Tensor]:
+        """
+        Build inference-only K/V token weights for a sliding text spotlight.
+
+        During the early-to-middle portion of sampling, a Gaussian spotlight
+        sweeps from the beginning to the end of the target text region. The
+        resulting weights are multiplied into cross-attention K/V.
+        """
+        if target_text_mask is None or strength <= 0 or sigma <= 0:
+            return None
+
+        B, L_text = text_mask.shape
+        device = text_mask.device
+        dtype = text_mask.dtype if torch.is_floating_point(text_mask) else torch.float32
+
+        if n_steps <= 0 or L_text <= 0 or early_stop_ratio <= 0:
+            return None
+
+        step_progress = 1.0 if n_steps <= 1 else step_index / max(n_steps - 1, 1)
+        if step_progress >= early_stop_ratio:
+            return None
+
+        normalized_progress = step_progress / max(early_stop_ratio, 1e-6)
+        step_strength = strength * ((1.0 - normalized_progress) ** decay_power)
+        if step_strength <= 0:
+            return None
+
+        weights = torch.ones(B, L_text, device=device, dtype=dtype)
+        sigma_sq = max(sigma * sigma, 1e-6)
+        valid_text_mask = text_mask.bool()
+        target_text_mask = target_text_mask.bool() & valid_text_mask
+
+        for b in range(B):
+            target_indices = target_text_mask[b].nonzero(as_tuple=False).flatten()
+            if target_indices.numel() == 0:
+                continue
+
+            L_target = int(target_indices.numel())
+            text_pos = torch.linspace(0.0, 1.0, L_target, device=device, dtype=dtype)
+            spotlight = torch.exp(-((text_pos - normalized_progress) ** 2) / (2.0 * sigma_sq))
+            weights[b, target_indices] = 1.0 + step_strength * spotlight
+
+        return weights
+
     @torch.no_grad()
     def sample(
         self,
@@ -198,6 +252,12 @@ class FlowMatching:
         n_steps: Optional[int] = None,
         seed: Optional[int] = None,
         show_progress: bool = True,
+        target_text_mask: Optional[torch.Tensor] = None,
+        infer_attn_guidance: bool = False,
+        infer_attn_strength: float = 1.5,
+        infer_attn_sigma: float = 0.4,
+        infer_attn_decay_power: float = 2.0,
+        infer_attn_early_stop_ratio: float = 0.7,
     ) -> torch.Tensor:
         """
         Generate latent sequence via Euler ODE solver with CFG.
@@ -213,6 +273,12 @@ class FlowMatching:
             cfg_scale:      Classifier-free guidance scale
             n_steps:        Number of Euler steps
             seed:           Random seed for reproducibility
+            target_text_mask:(B, L_text)|None target-text region used by inference guidance
+            infer_attn_guidance: whether to apply inference-only cross-attn guidance
+            infer_attn_strength: max boost for the sliding text spotlight
+            infer_attn_sigma: width of the spotlight on the text axis
+            infer_attn_decay_power: decay exponent for spotlight strength during the guided phase
+            infer_attn_early_stop_ratio: fraction of sampling steps that use the spotlight
 
         Returns:
             gen_latent: (B, T_gen, D) generated latent
@@ -254,8 +320,29 @@ class FlowMatching:
             t_cur = t_span[i].expand(B)
             dt = t_span[i + 1] - t_span[i]  # Negative (going from 1 → 0)
 
+            cross_attn_kv_weights = None
+            if infer_attn_guidance and not getattr(dit_model, "use_text_expand", False):
+                cross_attn_kv_weights = self._build_inference_cross_attn_kv_weights(
+                    text_mask=text_mask,
+                    target_text_mask=target_text_mask,
+                    step_index=i,
+                    n_steps=n_steps,
+                    strength=infer_attn_strength,
+                    sigma=infer_attn_sigma,
+                    decay_power=infer_attn_decay_power,
+                    early_stop_ratio=infer_attn_early_stop_ratio,
+                )
+
             # Conditional prediction
-            v_cond = dit_model(x, mask, t_cur, text_kv, text_mask, padding_mask=padding_mask)
+            v_cond = dit_model(
+                x,
+                mask,
+                t_cur,
+                text_kv,
+                text_mask,
+                padding_mask=padding_mask,
+                cross_attn_kv_weights=cross_attn_kv_weights,
+            )
 
             if cfg_scale > 0 and null_text_kv is not None:
                 # Unconditional prediction

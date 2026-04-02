@@ -195,6 +195,33 @@ def _resolve_duration_controls(
     return float(scale), float(bias_sec)
 
 
+def _resolve_infer_attn_controls(
+    infer_attn_guidance: bool = False,
+    infer_attn_strength: float = 1.5,
+    infer_attn_sigma: float = 0.4,
+    infer_attn_decay_power: float = 2.0,
+    infer_attn_early_stop_ratio: float = 0.7,
+) -> dict:
+    if infer_attn_sigma <= 0:
+        raise ValueError(f"infer_attn_sigma must be > 0, got {infer_attn_sigma}")
+    if infer_attn_strength < 0:
+        raise ValueError(f"infer_attn_strength must be >= 0, got {infer_attn_strength}")
+    if infer_attn_decay_power < 0:
+        raise ValueError(f"infer_attn_decay_power must be >= 0, got {infer_attn_decay_power}")
+    if not (0.0 <= infer_attn_early_stop_ratio <= 1.0):
+        raise ValueError(
+            f"infer_attn_early_stop_ratio must be in [0, 1], got {infer_attn_early_stop_ratio}"
+        )
+
+    return {
+        "infer_attn_guidance": bool(infer_attn_guidance),
+        "infer_attn_strength": float(infer_attn_strength),
+        "infer_attn_sigma": float(infer_attn_sigma),
+        "infer_attn_decay_power": float(infer_attn_decay_power),
+        "infer_attn_early_stop_ratio": float(infer_attn_early_stop_ratio),
+    }
+
+
 @torch.no_grad()
 def inference(
     dit, text_encoder, dur_pred, flow, cfg,
@@ -213,6 +240,11 @@ def inference(
     cfg_scale: float = None,
     n_steps: int = None,
     seed: int = None,
+    infer_attn_guidance: bool = False,
+    infer_attn_strength: float = 1.5,
+    infer_attn_sigma: float = 0.4,
+    infer_attn_decay_power: float = 2.0,
+    infer_attn_early_stop_ratio: float = 0.7,
 ):
     """
     Run TTS inference.
@@ -235,6 +267,24 @@ def inference(
     audio_cfg = cfg["audio"]
     latent_rate = audio_cfg["latent_rate"]
     sample_rate = audio_cfg["sample_rate"]
+    infer_attn_kwargs = _resolve_infer_attn_controls(
+        infer_attn_guidance=infer_attn_guidance,
+        infer_attn_strength=infer_attn_strength,
+        infer_attn_sigma=infer_attn_sigma,
+        infer_attn_decay_power=infer_attn_decay_power,
+        infer_attn_early_stop_ratio=infer_attn_early_stop_ratio,
+    )
+
+    if infer_attn_kwargs["infer_attn_guidance"]:
+        print(
+            "Inference attention guidance enabled: "
+            f"kv_strength={infer_attn_kwargs['infer_attn_strength']:.3f}, "
+            f"sigma={infer_attn_kwargs['infer_attn_sigma']:.3f}, "
+            f"decay_power={infer_attn_kwargs['infer_attn_decay_power']:.3f}, "
+            f"guided_ratio={infer_attn_kwargs['infer_attn_early_stop_ratio']:.3f}"
+        )
+        if getattr(dit, "use_text_expand", False):
+            print("WARNING: infer_attn_guidance is ignored when use_text_expand=true.")
 
     with autocast('cuda', dtype=torch.float16):
         # --- 1. Encode prompt audio ---
@@ -306,6 +356,8 @@ def inference(
             n_steps=n_steps,
             seed=seed,
             show_progress=True,
+            target_text_mask=target_text_mask,
+            **infer_attn_kwargs,
         )
         print(f"Generated latent shape: {gen_latent.shape}")
 
@@ -342,6 +394,11 @@ def inference_long(
     n_steps: int = None,
     seed: int = None,
     min_split_len: int = 8,
+    infer_attn_guidance: bool = False,
+    infer_attn_strength: float = 1.5,
+    infer_attn_sigma: float = 0.4,
+    infer_attn_decay_power: float = 2.0,
+    infer_attn_early_stop_ratio: float = 0.7,
 ):
     """
     Long-text TTS inference with automatic sentence splitting.
@@ -373,6 +430,11 @@ def inference_long(
             cfg_scale=cfg_scale,
             n_steps=n_steps,
             seed=seed,
+            infer_attn_guidance=infer_attn_guidance,
+            infer_attn_strength=infer_attn_strength,
+            infer_attn_sigma=infer_attn_sigma,
+            infer_attn_decay_power=infer_attn_decay_power,
+            infer_attn_early_stop_ratio=infer_attn_early_stop_ratio,
         )
 
     print(f"Split into {len(segments)} segments:")
@@ -422,6 +484,11 @@ def inference_long(
             cfg_scale=cfg_scale,
             n_steps=n_steps,
             seed=seed,
+            infer_attn_guidance=infer_attn_guidance,
+            infer_attn_strength=infer_attn_strength,
+            infer_attn_sigma=infer_attn_sigma,
+            infer_attn_decay_power=infer_attn_decay_power,
+            infer_attn_early_stop_ratio=infer_attn_early_stop_ratio,
         )
         all_latents.append(seg_latent)
 
@@ -455,11 +522,23 @@ def _inference_core(
     cfg_scale: float = None,
     n_steps: int = None,
     seed: int = None,
+    infer_attn_guidance: bool = False,
+    infer_attn_strength: float = 1.5,
+    infer_attn_sigma: float = 0.4,
+    infer_attn_decay_power: float = 2.0,
+    infer_attn_early_stop_ratio: float = 0.7,
 ) -> torch.Tensor:
     """Core inference logic (text encode → duration → sample). Returns gen_latent."""
     device = next(dit.parameters()).device
     audio_cfg = cfg["audio"]
     latent_rate = audio_cfg["latent_rate"]
+    infer_attn_kwargs = _resolve_infer_attn_controls(
+        infer_attn_guidance=infer_attn_guidance,
+        infer_attn_strength=infer_attn_strength,
+        infer_attn_sigma=infer_attn_sigma,
+        infer_attn_decay_power=infer_attn_decay_power,
+        infer_attn_early_stop_ratio=infer_attn_early_stop_ratio,
+    )
 
     with autocast('cuda', dtype=torch.float16):
         mapped_prompt_text = text_to_phonemes(prompt_text, prompt_language)
@@ -514,6 +593,8 @@ def _inference_core(
             n_steps=n_steps,
             seed=seed,
             show_progress=True,
+            target_text_mask=target_text_mask,
+            **infer_attn_kwargs,
         )
         print(f"Generated latent shape: {gen_latent.shape}")
 
@@ -538,6 +619,11 @@ if __name__ == "__main__":
     parser.add_argument("--vocab", type=str, default=None, help="Path to char_vocab.json")
     parser.add_argument("--split", action="store_true", help="Split long text by punctuation")
     parser.add_argument("--lora", type=str, default=None, help="Path to LoRA adapter directory")
+    parser.add_argument("--infer_attn_guidance", action="store_true", help="Enable inference-only target-text attention guidance")
+    parser.add_argument("--infer_attn_strength", type=float, default=1.5, help="Max K/V boost of the sliding target-text spotlight")
+    parser.add_argument("--infer_attn_sigma", type=float, default=0.4, help="Width of the sliding spotlight on the target-text axis")
+    parser.add_argument("--infer_attn_decay_power", type=float, default=2.0, help="How quickly the K/V boost fades during the guided phase")
+    parser.add_argument("--infer_attn_early_stop_ratio", type=float, default=0.7, help="Fraction of sampling steps that use the sliding text spotlight")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -561,4 +647,9 @@ if __name__ == "__main__":
         cfg_scale=args.cfg_scale,
         n_steps=args.n_steps,
         seed=args.seed,
+        infer_attn_guidance=args.infer_attn_guidance,
+        infer_attn_strength=args.infer_attn_strength,
+        infer_attn_sigma=args.infer_attn_sigma,
+        infer_attn_decay_power=args.infer_attn_decay_power,
+        infer_attn_early_stop_ratio=args.infer_attn_early_stop_ratio,
     )
